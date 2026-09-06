@@ -43,6 +43,12 @@
 build/
 Build/
 build-*/
+/build/
+/build-*/
+
+# Visual Studio
+/.vs/
+*.user
 
 # CMake generated files
 CMakeFiles/

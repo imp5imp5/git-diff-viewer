@@ -1,0 +1,571 @@
+#include "DiffView.h"
+#include "Theme.h"
+#include <algorithm>
+#include <climits>
+#include <windowsx.h>
+namespace gdv
+{
+namespace
+{
+void fill(HDC dc, RECT r, ThemeColor color)
+{
+  HBRUSH b = CreateSolidBrush(themeColor(color));
+  FillRect(dc, &r, b);
+  DeleteObject(b);
+}
+void text(HDC dc, RECT r, const std::wstring &value, ThemeColor color, UINT flags = DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX)
+{
+  SetTextColor(dc, themeColor(color));
+  DrawTextW(dc, value.c_str(), static_cast<int>(value.size()), &r, flags);
+}
+ThemeColor background(const DiffLine *l)
+{
+  if (!l)
+    return ThemeColor::EmptyCell;
+  if (l->type == DiffLineType::Added)
+    return ThemeColor::Added;
+  if (l->type == DiffLineType::Removed)
+    return ThemeColor::Removed;
+  return ThemeColor::Surface;
+}
+} // namespace
+DiffView::~DiffView()
+{
+  if (font_)
+    DeleteObject(font_);
+}
+HWND DiffView::create(HWND parent, HINSTANCE instance)
+{
+  WNDCLASSW wc{};
+  wc.hInstance = instance;
+  wc.lpfnWndProc = procedure;
+  wc.lpszClassName = L"GitDiffViewer.Diff";
+  wc.hCursor = LoadCursorW(nullptr, IDC_IBEAM);
+  RegisterClassW(&wc);
+  return CreateWindowExW(0, wc.lpszClassName, L"Diff", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | WS_VSCROLL | WS_HSCROLL, 0, 0,
+    100, 100, parent, nullptr, instance, this);
+}
+void DiffView::setDpi(UINT dpi)
+{
+  dpi_ = dpi;
+  if (font_)
+    DeleteObject(font_);
+  font_ = CreateFontW(-MulDiv(fontPoints_, static_cast<int>(dpi), 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+    OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH, L"Consolas");
+  HDC dc = GetDC(hwnd_);
+  auto old = SelectObject(dc, font_);
+  TEXTMETRICW tm{};
+  GetTextMetricsW(dc, &tm);
+  rowHeight_ = tm.tmHeight + MulDiv(5, static_cast<int>(dpi), 96);
+  charWidth_ = tm.tmAveCharWidth;
+  headerHeight_ = std::max(MulDiv(62, static_cast<int>(dpi), 96), rowHeight_ * 2);
+  SelectObject(dc, old);
+  ReleaseDC(hwnd_, dc);
+  setFile(file_, true, plain_);
+}
+void DiffView::setFile(const FileDiff *file, bool preserve, bool plainText)
+{
+  stopAutoScroll();
+  plain_ = plainText;
+  headerHeight_ = plain_ ? 0 : std::max(MulDiv(62, static_cast<int>(dpi_), 96), rowHeight_ * 2);
+  file_ = file;
+  rows_ = file ? buildPresentation(*file, side_) : std::vector<PresentationRow>{};
+  if (!preserve)
+  {
+    top_ = horizontal_ = 0;
+    selected_ = anchor_ = -1;
+  }
+  maxWidth_ = 0;
+  numberDigits_ = 7;
+  if (file)
+    for (const auto &text : file->metadata)
+      maxWidth_ = std::max(maxWidth_, static_cast<int>(std::min<size_t>(text.size() * charWidth_, INT_MAX / 2)));
+  if (file)
+    for (const auto &h : file->hunks)
+      for (const auto &l : h.lines)
+      {
+        for (auto n : {l.oldLine, l.newLine})
+          if (n)
+            numberDigits_ = std::max(numberDigits_, static_cast<int>(std::to_wstring(*n).size()));
+        size_t width = 0;
+        for (wchar_t c : l.text)
+          width += c == L'\t' ? 4 - (width % 4) : 1;
+        maxWidth_ = std::max(maxWidth_, static_cast<int>(std::min<size_t>(width * charWidth_, INT_MAX / 2)));
+      }
+  updateScroll();
+  InvalidateRect(hwnd_, nullptr, FALSE);
+}
+void DiffView::zoom(int steps)
+{
+  int size = std::clamp(fontPoints_ + steps, 6, 40);
+  if (size == fontPoints_)
+    return;
+  fontPoints_ = size;
+  setDpi(dpi_);
+}
+void DiffView::setMessage(std::wstring message)
+{
+  message_ = std::move(message);
+  setFile(nullptr);
+}
+void DiffView::setSideBySide(bool enabled)
+{
+  if (side_ == enabled)
+    return;
+  side_ = enabled;
+  auto rows = file_ ? buildPresentation(*file_, side_) : std::vector<PresentationRow>{};
+  top_ = static_cast<int>(correspondingRow(rows_, static_cast<size_t>(top_), rows));
+  if (selected_ >= 0)
+    selected_ = static_cast<int>(correspondingRow(rows_, static_cast<size_t>(selected_), rows));
+  if (anchor_ >= 0)
+    anchor_ = static_cast<int>(correspondingRow(rows_, static_cast<size_t>(anchor_), rows));
+  rows_ = std::move(rows);
+  updateScroll();
+  InvalidateRect(hwnd_, nullptr, FALSE);
+}
+int DiffView::pageRows() const
+{
+  RECT r{};
+  GetClientRect(hwnd_, &r);
+  return std::max(1, (static_cast<int>(r.bottom) - headerHeight_) / rowHeight_);
+}
+void DiffView::updateScroll()
+{
+  if (!hwnd_)
+    return;
+  int count = static_cast<int>(rows_.size()), page = pageRows();
+  top_ = std::clamp(top_, 0, std::max(0, count - page));
+  SCROLLINFO vertical{sizeof(SCROLLINFO), SIF_RANGE | SIF_PAGE | SIF_POS, 0, std::max(0, count - 1), static_cast<UINT>(page), top_, 0};
+  SetScrollInfo(hwnd_, SB_VERT, &vertical, TRUE);
+  RECT r{};
+  GetClientRect(hwnd_, &r);
+  int width = plain_ ? std::max(1, static_cast<int>(r.right) - MulDiv(28, static_cast<int>(dpi_), 96))
+                     : std::max(1, static_cast<int>(side_ ? r.right / 2 : r.right) -
+                                     (side_ ? numberDigits_ + 2 : numberDigits_ * 2 + 3) * charWidth_);
+  horizontal_ = std::clamp(horizontal_, 0, std::max(0, maxWidth_ - width));
+  SCROLLINFO horizontal{
+    sizeof(SCROLLINFO), SIF_RANGE | SIF_PAGE | SIF_POS, 0, std::max(0, maxWidth_ - 1), static_cast<UINT>(width), horizontal_, 0};
+  SetScrollInfo(hwnd_, SB_HORZ, &horizontal, TRUE);
+}
+void DiffView::scrollTo(int row)
+{
+  top_ = row;
+  updateScroll();
+  InvalidateRect(hwnd_, nullptr, FALSE);
+}
+const DiffLine *DiffView::line(const PresentationRow &row, size_t index) const
+{
+  if (!file_ || row.hunk == noLine || index == noLine)
+    return nullptr;
+  return &file_->hunks[row.hunk].lines[index];
+}
+void DiffView::paint(HDC printDC)
+{
+  PAINTSTRUCT ps{};
+  HDC target = printDC ? printDC : BeginPaint(hwnd_, &ps);
+  RECT area{};
+  GetClientRect(hwnd_, &area);
+  if (area.right <= 0 || area.bottom <= 0)
+  {
+    if (!printDC)
+      EndPaint(hwnd_, &ps);
+    return;
+  }
+  HDC dc = CreateCompatibleDC(target);
+  HBITMAP bitmap = CreateCompatibleBitmap(target, area.right, area.bottom);
+  auto oldBitmap = SelectObject(dc, bitmap);
+  auto oldFont = SelectObject(dc, font_);
+  SetBkMode(dc, TRANSPARENT);
+  fill(dc, area, ThemeColor::Surface);
+  int pad = MulDiv(14, static_cast<int>(dpi_), 96), half = area.right / 2;
+  RECT header{0, 0, area.right, headerHeight_};
+  if (!plain_)
+  {
+    fill(dc, header, ThemeColor::Window);
+    RECT title{pad, 0, area.right - pad, headerHeight_ / 2};
+    text(dc, title, file_ ? file_->path() : L"GitDiffViewer", ThemeColor::Title,
+      DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+    RECT labels{pad, headerHeight_ / 2, area.right - pad, headerHeight_};
+    if (side_)
+    {
+      auto left = labels;
+      left.right = half;
+      text(dc, left, L"BEFORE", ThemeColor::BeforeText);
+      labels.left = half + pad;
+      text(dc, labels, L"AFTER", ThemeColor::AfterText);
+    }
+    else
+      text(dc, labels, L"OLD     NEW     UNIFIED DIFF", ThemeColor::HeaderText);
+  }
+  if (!file_)
+  {
+    RECT empty{pad * 2, headerHeight_ + pad * 2, area.right - pad * 2, area.bottom - pad};
+    text(dc, empty, message_, ThemeColor::MutedText, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+  }
+  auto drawCell = [&](RECT r, const DiffLine *l, bool oldSide, bool unified, bool selected) {
+    fill(dc, r, selected ? ThemeColor::Selection : background(l));
+    if (!l)
+      return;
+    int gutter = (unified ? numberDigits_ * 2 + 3 : numberDigits_ + 2) * charWidth_;
+    RECT nums = r;
+    nums.right = r.left + gutter;
+    std::wstring number;
+    auto field = [this](std::optional<int> n) {
+      std::wstring s = n ? std::to_wstring(*n) : L"";
+      if (s.size() < static_cast<size_t>(numberDigits_))
+        s.insert(0, static_cast<size_t>(numberDigits_) - s.size(), L' ');
+      return s;
+    };
+    if (unified)
+      number = field(l->oldLine) + field(l->newLine) + L" ";
+    else
+      number = field(oldSide ? l->oldLine : l->newLine) + L" ";
+    number += l->type == DiffLineType::Added ? L'+' : l->type == DiffLineType::Removed ? L'-' : L' ';
+    text(dc, nums, number, ThemeColor::LineNumber);
+    RECT content = r;
+    content.left += gutter;
+    int saved = SaveDC(dc);
+    IntersectClipRect(dc, content.left, content.top, content.right, content.bottom);
+    std::wstring expanded;
+    expanded.reserve(l->text.size());
+    size_t column = 0;
+    for (auto c : l->text)
+    {
+      if (c == L'\t')
+      {
+        size_t n = 4 - column % 4;
+        expanded.append(n, L' ');
+        column += n;
+      }
+      else
+      {
+        expanded += c == L'\r' ? L'↵' : c;
+        ++column;
+      }
+    }
+    content.left -= horizontal_;
+    content.right = std::max(content.right, content.left + maxWidth_ + charWidth_);
+    text(dc, content, expanded, ThemeColor::DiffText);
+    RestoreDC(dc, saved);
+  };
+  int visible = (area.bottom - headerHeight_ + rowHeight_ - 1) / rowHeight_;
+  for (int n = 0; n < visible && top_ + n < static_cast<int>(rows_.size()); ++n)
+  {
+    int index = top_ + n;
+    const auto &row = rows_[index];
+    RECT r{0, headerHeight_ + n * rowHeight_, area.right, headerHeight_ + (n + 1) * rowHeight_};
+    bool selected = anchor_ >= 0 && selected_ >= 0 && index >= std::min(anchor_, selected_) && index <= std::max(anchor_, selected_);
+    if (!row.meta.empty())
+    {
+      fill(dc, r, selected ? ThemeColor::Selection : plain_ ? ThemeColor::Surface : ThemeColor::Metadata);
+      r.left += pad - horizontal_;
+      text(dc, r, row.meta, plain_ ? ThemeColor::Text : ThemeColor::MetadataText);
+    }
+    else if (side_)
+    {
+      auto left = r;
+      left.right = half;
+      drawCell(left, line(row, row.left), true, false, selected);
+      auto right = r;
+      right.left = half;
+      drawCell(right, line(row, row.right), false, false, selected);
+    }
+    else
+      drawCell(r, line(row, row.left != noLine ? row.left : row.right), false, true, selected);
+  }
+  if (side_ && !plain_)
+    fill(dc, {half, headerHeight_ / 2, half + 1, area.bottom}, ThemeColor::Border);
+  if (autoScroll_)
+  {
+    int radius = MulDiv(10, static_cast<int>(dpi_), 96);
+    auto pen = CreatePen(PS_SOLID, 1, themeColor(ThemeColor::Text));
+    auto brush = CreateSolidBrush(themeColor(ThemeColor::Window));
+    auto oldPen = SelectObject(dc, pen), oldBrush = SelectObject(dc, brush);
+    int x = autoOrigin_.x, y = autoOrigin_.y;
+    Ellipse(dc, x - radius, y - radius, x + radius + 1, y + radius + 1);
+    POINT up[] = {{x - 3, y - 3}, {x, y - 6}, {x + 3, y - 3}};
+    POINT down[] = {{x - 3, y + 3}, {x, y + 6}, {x + 3, y + 3}};
+    Polyline(dc, up, 3);
+    Polyline(dc, down, 3);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(pen);
+    DeleteObject(brush);
+  }
+  BitBlt(target, 0, 0, area.right, area.bottom, dc, 0, 0, SRCCOPY);
+  SelectObject(dc, oldFont);
+  SelectObject(dc, oldBitmap);
+  DeleteObject(bitmap);
+  DeleteDC(dc);
+  if (!printDC)
+    EndPaint(hwnd_, &ps);
+}
+void DiffView::copy()
+{
+  if (anchor_ < 0 || selected_ < 0 || rows_.empty())
+    return;
+  std::wstring output;
+  for (int i = std::min(anchor_, selected_); i <= std::max(anchor_, selected_) && i < static_cast<int>(rows_.size()); ++i)
+  {
+    const auto &row = rows_[i];
+    auto left = line(row, row.left), right = line(row, row.right);
+    if (!row.meta.empty())
+      output += row.meta;
+    else if (side_)
+    {
+      if (left)
+        output += left->text;
+      output += L'\t';
+      if (right)
+        output += right->text;
+    }
+    else if (left || right)
+      output += (left ? left : right)->text;
+    output += L"\r\n";
+  }
+  if (!OpenClipboard(hwnd_))
+    return;
+  SIZE_T bytes = (output.size() + 1) * sizeof(wchar_t);
+  HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE, bytes);
+  if (data)
+  {
+    void *p = GlobalLock(data);
+    if (p)
+    {
+      memcpy(p, output.c_str(), bytes);
+      GlobalUnlock(data);
+      EmptyClipboard();
+      if (!SetClipboardData(CF_UNICODETEXT, data))
+        GlobalFree(data);
+    }
+    else
+      GlobalFree(data);
+  }
+  CloseClipboard();
+}
+LRESULT CALLBACK DiffView::procedure(HWND hwnd, UINT msg, WPARAM w, LPARAM l)
+{
+  auto self = reinterpret_cast<DiffView *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (msg == WM_NCCREATE)
+  {
+    self = static_cast<DiffView *>(reinterpret_cast<CREATESTRUCTW *>(l)->lpCreateParams);
+    self->hwnd_ = hwnd;
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+  }
+  return self ? self->message(msg, w, l) : DefWindowProcW(hwnd, msg, w, l);
+}
+void DiffView::stopAutoScroll()
+{
+  if (!autoScroll_)
+    return;
+  autoScroll_ = false;
+  KillTimer(hwnd_, 2);
+  if (GetCapture() == hwnd_)
+    ReleaseCapture();
+  SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
+  InvalidateRect(hwnd_, nullptr, FALSE);
+}
+LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
+{
+  switch (msg)
+  {
+    case WM_CREATE: setDpi(GetDpiForWindow(hwnd_)); return 0;
+    case WM_PAINT: paint(); return 0;
+    case WM_PRINTCLIENT: paint(reinterpret_cast<HDC>(w)); return 0;
+    case WM_ERASEBKGND: return 1;
+    case WM_SIZE:
+      updateScroll();
+      InvalidateRect(hwnd_, nullptr, FALSE);
+      return 0;
+    case WM_GETDLGCODE: return DLGC_WANTARROWS | DLGC_WANTCHARS;
+    case WM_VSCROLL:
+    case WM_HSCROLL:
+    {
+      bool vertical = msg == WM_VSCROLL;
+      SCROLLINFO info{sizeof(info), SIF_ALL};
+      GetScrollInfo(hwnd_, vertical ? SB_VERT : SB_HORZ, &info);
+      int pos = vertical ? top_ : horizontal_, step = vertical ? 1 : charWidth_ * 3;
+      switch (LOWORD(w))
+      {
+        case SB_LINEUP: pos -= step; break;
+        case SB_LINEDOWN: pos += step; break;
+        case SB_PAGEUP: pos -= info.nPage; break;
+        case SB_PAGEDOWN: pos += info.nPage; break;
+        case SB_THUMBTRACK:
+        case SB_THUMBPOSITION: pos = info.nTrackPos; break;
+        case SB_TOP: pos = 0; break;
+        case SB_BOTTOM: pos = info.nMax; break;
+      }
+      if (vertical)
+        top_ = pos;
+      else
+        horizontal_ = pos;
+      updateScroll();
+      InvalidateRect(hwnd_, nullptr, FALSE);
+      return 0;
+    }
+    case WM_MBUTTONDOWN:
+      if (autoScroll_)
+      {
+        stopAutoScroll();
+        return 0;
+      }
+      if (rows_.empty() || GET_Y_LPARAM(l) < headerHeight_)
+        return 0;
+      SetFocus(hwnd_);
+      dragging_ = false;
+      autoOrigin_ = {GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+      autoRemainder_ = 0;
+      autoTick_ = GetTickCount64();
+      autoScroll_ = true;
+      SetCapture(hwnd_);
+      SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
+      SetTimer(hwnd_, 2, 16, nullptr);
+      InvalidateRect(hwnd_, nullptr, FALSE);
+      return 0;
+    case WM_MBUTTONUP: return 0;
+    case WM_TIMER:
+      if (w == 2 && autoScroll_)
+      {
+        POINT cursor{};
+        GetCursorPos(&cursor);
+        ScreenToClient(hwnd_, &cursor);
+        int dy = MulDiv(cursor.y - autoOrigin_.y, 96, static_cast<int>(dpi_));
+        auto now = GetTickCount64();
+        double seconds = std::min<ULONGLONG>(now - autoTick_, 100) / 1000.0;
+        autoTick_ = now;
+        int distance = std::max(0, std::abs(dy) - 12);
+        if (!distance)
+          autoRemainder_ = 0;
+        else
+          autoRemainder_ += (dy < 0 ? -1 : 1) * std::min(600.0, distance * distance / 250.0 + distance / 12.0) * seconds;
+        int lines = static_cast<int>(autoRemainder_);
+        autoRemainder_ -= lines;
+        if (lines)
+          scrollTo(top_ + lines);
+      }
+      return 0;
+    case WM_SETCURSOR:
+      if (autoScroll_)
+      {
+        SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
+        return TRUE;
+      }
+      break;
+    case WM_KILLFOCUS:
+    case WM_CANCELMODE: stopAutoScroll(); break;
+    case WM_RBUTTONDOWN:
+      if (autoScroll_)
+      {
+        stopAutoScroll();
+        return 0;
+      }
+      break;
+    case WM_MOUSEWHEEL:
+      stopAutoScroll();
+      if (GET_KEYSTATE_WPARAM(w) & MK_CONTROL)
+      {
+        zoomWheel_ += GET_WHEEL_DELTA_WPARAM(w);
+        zoom(zoomWheel_ / WHEEL_DELTA);
+        zoomWheel_ %= WHEEL_DELTA;
+        return 0;
+      }
+      wheel_ += GET_WHEEL_DELTA_WPARAM(w);
+      scrollTo(top_ - (wheel_ / WHEEL_DELTA) * 3);
+      wheel_ %= WHEEL_DELTA;
+      return 0;
+    case WM_LBUTTONDOWN:
+    {
+      if (autoScroll_)
+      {
+        stopAutoScroll();
+        return 0;
+      }
+      SetFocus(hwnd_);
+      if (GET_Y_LPARAM(l) < headerHeight_ || rows_.empty())
+        return 0;
+      selected_ = std::min(static_cast<int>(rows_.size()) - 1, top_ + (GET_Y_LPARAM(l) - headerHeight_) / rowHeight_);
+      if (!(GetKeyState(VK_SHIFT) & 0x8000) || anchor_ < 0)
+        anchor_ = selected_;
+      dragging_ = true;
+      SetCapture(hwnd_);
+      InvalidateRect(hwnd_, nullptr, FALSE);
+      return 0;
+    }
+    case WM_MOUSEMOVE:
+      if (dragging_ && !rows_.empty())
+      {
+        selected_ = std::clamp(top_ + (GET_Y_LPARAM(l) - headerHeight_) / rowHeight_, 0, static_cast<int>(rows_.size()) - 1);
+        if (selected_ < top_)
+          scrollTo(selected_);
+        else if (selected_ >= top_ + pageRows())
+          scrollTo(selected_ - pageRows() + 1);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+      }
+      return 0;
+    case WM_LBUTTONUP:
+      dragging_ = false;
+      ReleaseCapture();
+      return 0;
+    case WM_CAPTURECHANGED:
+      dragging_ = false;
+      stopAutoScroll();
+      return 0;
+    case WM_KEYDOWN:
+    {
+      if (autoScroll_)
+      {
+        stopAutoScroll();
+        if (w == VK_ESCAPE)
+          return 0;
+      }
+      if ((GetKeyState(VK_CONTROL) & 0x8000) && w == 'C')
+      {
+        copy();
+        return 0;
+      }
+      if ((GetKeyState(VK_CONTROL) & 0x8000) && w == 'A' && !rows_.empty())
+      {
+        anchor_ = 0;
+        selected_ = static_cast<int>(rows_.size()) - 1;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+      }
+      int next = selected_ >= 0 ? selected_ : top_;
+      switch (w)
+      {
+        case VK_UP: --next; break;
+        case VK_DOWN: ++next; break;
+        case VK_PRIOR: next -= pageRows(); break;
+        case VK_NEXT: next += pageRows(); break;
+        case VK_HOME: next = 0; break;
+        case VK_END: next = static_cast<int>(rows_.size()) - 1; break;
+        case VK_LEFT:
+          horizontal_ -= charWidth_ * 3;
+          updateScroll();
+          InvalidateRect(hwnd_, nullptr, FALSE);
+          return 0;
+        case VK_RIGHT:
+          horizontal_ += charWidth_ * 3;
+          updateScroll();
+          InvalidateRect(hwnd_, nullptr, FALSE);
+          return 0;
+        default: return DefWindowProcW(hwnd_, msg, w, l);
+      }
+      if (!rows_.empty())
+      {
+        selected_ = std::clamp(next, 0, static_cast<int>(rows_.size()) - 1);
+        if (!(GetKeyState(VK_SHIFT) & 0x8000) || anchor_ < 0)
+          anchor_ = selected_;
+        if (selected_ < top_)
+          scrollTo(selected_);
+        else if (selected_ >= top_ + pageRows())
+          scrollTo(selected_ - pageRows() + 1);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+      }
+      return 0;
+    }
+  }
+  return DefWindowProcW(hwnd_, msg, w, l);
+}
+} // namespace gdv
