@@ -79,7 +79,7 @@ do {
 & .\tools\app_command.ps1 -Directory $session -Command close
 ```
 
-Supported commands include `state`, `open`, `source`, `view`, `theme`, `base`, `target`, `compare`, `refresh`, `select-file`, `select-commit`, `hover-commit`, `end-hover`, `scroll`, `zoom`, `ctrl-wheel`, `key`, `resize`, `screenshot`, `screenshot-commits`, and `close`. See `src/ui/Automation.cpp` and `tests/InterfaceTests.ps1` for argument handling and examples.
+Supported commands include `state`, `open`, `source`, `view`, `theme`, `base`, `target`, `compare`, `refresh`, `select-file`, `select-commit`, `hover-commit`, `end-hover`, `scroll`, `zoom`, `ctrl-wheel`, `key`, `resize`, `splitter`, `screenshot`, `screenshot-commits`, and `close`. See `src/ui/Automation.cpp` and `tests/InterfaceTests.ps1` for argument handling and examples.
 
 Git loading is asynchronous. After changing the repository, source, or commit, poll `state` until `loading` is false before selecting files. Screenshot arguments are PNG filenames within the session directory.
 

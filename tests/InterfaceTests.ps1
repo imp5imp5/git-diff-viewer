@@ -84,6 +84,10 @@ try {
     Invoke-App 'select-file' @('binary.dat') | Out-Null
     Capture 'binary.png'
     Invoke-App 'resize' @('900','600') | Out-Null
+    $state=Invoke-App 'splitter' @('360')
+    $filesControl=$state.controls | Where-Object {$_.id -eq 'files'}
+    $diffControl=$state.controls | Where-Object {$_.id -eq 'diff'}
+    Check ($filesControl.x + $filesControl.width -eq 360 -and $diffControl.x -gt 360) 'Dragging splitter resizes file and diff panes'
     Capture 'resized.png'
     Invoke-App 'source' @('unstaged') | Out-Null
     $state=Wait-Idle

@@ -124,6 +124,7 @@ Use **Refresh** to reload repository changes. Refresh is manual.
 | `Ctrl+mouse wheel` over the diff | Change diff font size. |
 | `Ctrl+-` / `Ctrl+=` | Decrease / increase diff font size. Numpad plus and minus also work. |
 | Mouse drag in the diff | Select rows. |
+| Mouse drag between the file list and diff | Resize the file list. |
 | `Shift+click` | Extend the row selection. |
 | `Ctrl+A` with the diff focused | Select all diff rows. |
 | `Ctrl+C` with the diff focused | Copy selected rows. |

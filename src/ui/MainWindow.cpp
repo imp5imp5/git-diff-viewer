@@ -32,6 +32,8 @@ enum
   Theme
 };
 constexpr auto settingsKey = L"Software\\gaijin\\git_diff_viewer";
+constexpr int minFilePaneWidth = 220;
+constexpr int minDiffPaneWidth = 300;
 DWORD readSetting(const wchar_t *name, DWORD fallback)
 {
   DWORD value = fallback, size = sizeof(value);
@@ -74,6 +76,7 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
   automationDirectory_ = std::move(automationDirectory);
   side_ = automationDirectory_.empty() && readSetting(L"SideBySide", 0) != 0;
   darkTheme = !automationDirectory_.empty() || readSetting(L"DarkTheme", 1) != 0;
+  filePaneWidth_ = automationDirectory_.empty() ? static_cast<int>(std::min<DWORD>(readSetting(L"FilePaneWidth", 0), 4096)) : 0;
   WNDCLASSEXW wc{sizeof(wc)};
   wc.hInstance = instance;
   wc.lpfnWndProc = procedure;
@@ -241,8 +244,10 @@ void MainWindow::layout()
   RECT r{};
   GetClientRect(hwnd_, &r);
   auto scale = [&](int n) { return MulDiv(n, static_cast<int>(dpi_), 96); };
-  int width = r.right, height = r.bottom, pad = scale(12), gap = scale(8), row = scale(30),
-      left = std::clamp(width / 4, scale(220), scale(380));
+  int width = r.right, height = r.bottom, pad = scale(12), gap = scale(8), row = scale(30);
+  int maximumLeft = std::max(scale(minFilePaneWidth), width - pad - gap - scale(minDiffPaneWidth));
+  int left = filePaneWidth_ > 0 ? std::clamp(scale(filePaneWidth_), scale(minFilePaneWidth), maximumLeft)
+                                : std::clamp(width / 4, scale(minFilePaneWidth), scale(380));
   int footerHeight = scale(36);
   auto move = [&](HWND h, int x, int y, int w, int ht) { MoveWindow(h, x, y, std::max(1, w), std::max(1, ht), TRUE); };
   move(refresh_, pad, pad, scale(80), row);
@@ -286,7 +291,35 @@ void MainWindow::layout()
   fy += scale(25);
   move(files_, pad, fy, left - pad, height - fy - footerHeight);
   move(diff_.handle(), left + gap, y, width - left - gap - pad, height - y - footerHeight);
+  splitter_ = {left, y, left + gap, height - footerHeight};
   move(status_, pad, height - scale(27), width - pad * 2, scale(22));
+}
+void MainWindow::drawSplitter(HDC dc) const
+{
+  if (IsRectEmpty(&splitter_))
+    return;
+  RECT line = splitter_;
+  int lineWidth = std::max(1, MulDiv(1, static_cast<int>(dpi_), 96));
+  int center = (line.left + line.right) / 2;
+  line.left = center - lineWidth / 2;
+  line.right = line.left + lineWidth;
+  auto brush = CreateSolidBrush(themeColor(ThemeColor::Border));
+  FillRect(dc, &line, brush);
+  DeleteObject(brush);
+}
+void MainWindow::moveSplitter(int x)
+{
+  RECT client{};
+  GetClientRect(hwnd_, &client);
+  auto scale = [&](int n) { return MulDiv(n, static_cast<int>(dpi_), 96); };
+  int pad = scale(12), gap = scale(8);
+  int maximum = std::max(scale(minFilePaneWidth), static_cast<int>(client.right) - pad - gap - scale(minDiffPaneWidth));
+  int position = std::clamp(x, scale(minFilePaneWidth), maximum);
+  if (position == splitter_.left)
+    return;
+  filePaneWidth_ = MulDiv(position, 96, static_cast<int>(dpi_));
+  layout();
+  RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
 }
 void MainWindow::sourceChanged()
 {
@@ -734,6 +767,7 @@ void MainWindow::saveSettings()
   number(L"SideBySide", side_);
   number(L"FontSize", diff_.fontSize());
   number(L"DarkTheme", darkTheme);
+  number(L"FilePaneWidth", static_cast<DWORD>(filePaneWidth_));
   string(L"Base", getText(base_));
   string(L"Target", getText(target_));
   auto index = SendMessageW(commits_, CB_GETCURSEL, 0, 0);
@@ -935,6 +969,14 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
       FillRect(reinterpret_cast<HDC>(w), &r, backgroundBrush_);
       return 1;
     }
+    case WM_PAINT:
+    {
+      PAINTSTRUCT paint{};
+      auto dc = BeginPaint(hwnd_, &paint);
+      drawSplitter(dc);
+      EndPaint(hwnd_, &paint);
+      return 0;
+    }
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLOREDIT:
     case WM_CTLCOLORLISTBOX:
@@ -996,10 +1038,59 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
       RECT r{};
       GetClientRect(hwnd_, &r);
       FillRect(reinterpret_cast<HDC>(w), &r, backgroundBrush_);
+      drawSplitter(reinterpret_cast<HDC>(w));
       return 0;
     }
     case WM_CREATE: createControls(); return 0;
-    case WM_SIZE: layout(); return 0;
+    case WM_SIZE:
+      layout();
+      RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
+      return 0;
+    case WM_SETCURSOR:
+    {
+      POINT point{};
+      GetCursorPos(&point);
+      ScreenToClient(hwnd_, &point);
+      if (draggingSplitter_ || PtInRect(&splitter_, point))
+      {
+        SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+        return TRUE;
+      }
+      break;
+    }
+    case WM_LBUTTONDOWN:
+    {
+      POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+      if (PtInRect(&splitter_, point))
+      {
+        draggingSplitter_ = true;
+        splitterDragOffset_ = point.x - splitter_.left;
+        SetCapture(hwnd_);
+        SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+        return 0;
+      }
+      break;
+    }
+    case WM_MOUSEMOVE:
+      if (draggingSplitter_)
+      {
+        moveSplitter(GET_X_LPARAM(l) - splitterDragOffset_);
+        return 0;
+      }
+      break;
+    case WM_LBUTTONUP:
+      if (draggingSplitter_)
+      {
+        moveSplitter(GET_X_LPARAM(l) - splitterDragOffset_);
+        ReleaseCapture();
+        return 0;
+      }
+      break;
+    case WM_CAPTURECHANGED: draggingSplitter_ = false; break;
+    case WM_CANCELMODE:
+      if (draggingSplitter_)
+        ReleaseCapture();
+      break;
     case WM_GETMINMAXINFO:
     {
       auto p = reinterpret_cast<MINMAXINFO *>(l);

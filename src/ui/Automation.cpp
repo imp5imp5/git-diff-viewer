@@ -272,6 +272,14 @@ void MainWindow::automationTick()
       int width = integer(arg(0), 820, 4096), height = integer(arg(1), 500, 4096);
       SetWindowPos(hwnd_, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
+    else if (command == L"splitter")
+    {
+      int position = integer(arg(0), 0, 4096);
+      int y = (splitter_.top + splitter_.bottom) / 2;
+      SendMessageW(hwnd_, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(splitter_.left, y));
+      SendMessageW(hwnd_, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(position, y));
+      SendMessageW(hwnd_, WM_LBUTTONUP, 0, MAKELPARAM(position, y));
+    }
     else if (command == L"screenshot" || command == L"screenshot-commits")
     {
       auto name = arg(0);

@@ -29,6 +29,8 @@ private:
   void previewCommit(int index);
   void endPreview();
   void drawListItem(const DRAWITEMSTRUCT &item);
+  void drawSplitter(HDC dc) const;
+  void moveSplitter(int x);
   static LRESULT CALLBACK comboProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   static LRESULT CALLBACK commitListProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   void screenshot();
@@ -59,6 +61,9 @@ private:
   const FileDiff *previewPreviousFile_{};
   bool previewPreviousPlain_{};
   int previewIndex_{-1}, previewTop_{};
+  int filePaneWidth_{}, splitterDragOffset_{};
+  RECT splitter_{};
+  bool draggingSplitter_{};
   bool automationHover_{};
   HWND commitPopup_{};
   std::vector<Commit> series_;
