@@ -112,7 +112,7 @@ When viewing an individual commit, the first file-list entry is **`<<Commit Mess
 
 Use **Refresh** to reload repository changes. Refresh is manual.
 
-Use **Full file** or press `F` to show every line of each changed text file instead of only the changed hunks and their surrounding context. Toggle it again to return to the compact diff.
+Use **Full file** or press `F` to show every line of each changed text file instead of only the changed hunks and their surrounding context. The vertical scrollbar shows removed changes in red and added changes in green. Toggle the mode again to return to the compact diff.
 
 ### Keyboard and mouse controls
 

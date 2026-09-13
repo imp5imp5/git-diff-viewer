@@ -12,6 +12,7 @@ struct PresentationRow
 struct ChangeBlock
 {
   size_t first{}, last{};
+  bool added{}, removed{};
 };
 // Indices keep presentation independent of vector reallocations.
 std::vector<PresentationRow> buildPresentation(const FileDiff &file, bool sideBySide);

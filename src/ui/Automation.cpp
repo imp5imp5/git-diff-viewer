@@ -65,6 +65,9 @@ std::string MainWindow::stateJson() const
                     ",\"activeChangeStart\":" + std::to_string(diff_.activeChangeStart()) +
                     ",\"activeChangeEnd\":" + std::to_string(diff_.activeChangeEnd()) +
                     ",\"changeFlashing\":" + (diff_.changeFlashing() ? "true" : "false") +
+                    ",\"minimapMarkers\":" + std::to_string(diff_.minimapMarkerCount()) +
+                    ",\"scrollbarHover\":" + std::string(diff_.scrollbarHovered() ? "true" : "false") +
+                    ",\"scrollbarDragging\":" + std::string(diff_.scrollbarDragging() ? "true" : "false") +
                     ",\"fontSize\":" + std::to_string(diff_.fontSize()) + ",\"status\":" + json(label(status_)) +
                     ",\"width\":" + std::to_string(r.right) + ",\"height\":" + std::to_string(r.bottom) + ",\"files\":[";
   bool first = true;
@@ -266,6 +269,29 @@ void MainWindow::automationTick()
     }
     else if (command == L"scroll")
       diff_.scroll(integer(arg(0), 0, std::max(0, diff_.rowCount() - 1)));
+    else if (command == L"scrollbar")
+    {
+      auto action = arg(0);
+      RECT area{};
+      GetClientRect(diff_.handle(), &area);
+      int x = std::max(0L, area.right - 4);
+      if (action == L"hover")
+        SendMessageW(diff_.handle(), WM_MOUSEMOVE, 0, MAKELPARAM(x, area.bottom / 2));
+      else if (action == L"leave")
+        SendMessageW(diff_.handle(), WM_MOUSELEAVE, 0, 0);
+      else if (action == L"press-middle")
+        SendMessageW(diff_.handle(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, area.bottom / 2));
+      else if (action == L"release")
+        SendMessageW(diff_.handle(), WM_LBUTTONUP, 0, MAKELPARAM(x, area.bottom / 2));
+      else if (action == L"drag-bottom")
+      {
+        SendMessageW(diff_.handle(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, 4));
+        SendMessageW(diff_.handle(), WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x, std::max(4L, area.bottom - 4)));
+        SendMessageW(diff_.handle(), WM_LBUTTONUP, 0, MAKELPARAM(x, std::max(4L, area.bottom - 4)));
+      }
+      else
+        throw std::runtime_error("Unknown scrollbar action.");
+    }
     else if (command == L"navigate-change")
     {
       auto value = arg(0);

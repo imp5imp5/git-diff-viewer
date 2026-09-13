@@ -383,9 +383,10 @@ void MainWindow::loaded()
   initialLoad_ = false;
   if (!result->error.empty())
   {
+    rememberFileScroll();
     diff_.setMessage(L"Unable to load changes\n\n" + result->error);
     snapshot_ = {};
-    visitedFullFiles_.clear();
+    scrollContext_.clear();
     selectedPath_.clear();
     SendMessageW(files_, LB_RESETCONTENT, 0, 0);
     SetWindowTextW(info_, directory_.c_str());
@@ -399,9 +400,11 @@ void MainWindow::loaded()
     return;
   }
   // Invalidate the view's pointer before replacing the owning document.
+  rememberFileScroll();
   diff_.setFile(nullptr);
   snapshot_ = std::move(result->snapshot);
-  visitedFullFiles_.clear();
+  scrollContext_ = snapshot_.root + L"\n" + std::to_wstring(static_cast<int>(result->request.source)) + L"\n" + result->request.base +
+                   L"\n" + result->request.target + (result->request.fullFile ? L"\nfull" : L"\ncompact");
   messageReturnIndex_ = -1;
   fileChanges_.clear();
   for (const auto &file : snapshot_.document.files)
@@ -542,6 +545,7 @@ void MainWindow::toggleCommitMessage()
 void MainWindow::selectFile()
 {
   endPreview();
+  rememberFileScroll();
   auto index = SendMessageW(files_, LB_GETCURSEL, 0, 0);
   if (!snapshot_.commitId.empty())
   {
@@ -558,10 +562,19 @@ void MainWindow::selectFile()
     auto &file = snapshot_.document.files[static_cast<size_t>(index)];
     selectedPath_ = file.path();
     diff_.setFile(&file);
-    if (fullFile_ && visitedFullFiles_.insert(selectedPath_).second)
+    auto saved = fileScrollPositions_.find(fileScrollKey(selectedPath_));
+    if (saved != fileScrollPositions_.end())
+      diff_.scroll(saved->second);
+    else if (fullFile_)
       diff_.showFirstChange();
   }
 }
+void MainWindow::rememberFileScroll()
+{
+  if (!scrollContext_.empty() && !selectedPath_.empty() && diff_.file() && !diff_.plainText())
+    fileScrollPositions_[fileScrollKey(selectedPath_)] = diff_.topRow();
+}
+std::wstring MainWindow::fileScrollKey(const std::wstring &path) const { return scrollContext_ + L"\n" + path; }
 void MainWindow::toggle()
 {
   side_ = !side_;
@@ -571,6 +584,7 @@ void MainWindow::toggle()
 void MainWindow::toggleFullFile()
 {
   fullFile_ = SendMessageW(fullFileButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+  diff_.setChangeMinimap(fullFile_);
   bool selectedCommit = source(source_) == ChangeSource::ReadyToPush && SendMessageW(commits_, CB_GETCURSEL, 0, 0) > 0;
   refresh(selectedCommit);
 }

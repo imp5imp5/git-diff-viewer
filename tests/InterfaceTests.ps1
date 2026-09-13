@@ -56,11 +56,16 @@ try {
     $compactRows=$state.rowCount
     Invoke-App 'full-file' @('on') | Out-Null
     $state=Wait-Idle
-    Check ($state.fullFile -and $state.selectedFile -eq 'app.cpp' -and $state.rowCount -gt $compactRows) 'Full-file mode loads omitted context'
+    Check ($state.fullFile -and $state.selectedFile -eq 'app.cpp' -and $state.rowCount -gt $compactRows -and $state.minimapMarkers -eq 3) 'Full-file mode loads omitted context and shows minimap markers'
     Check ($state.activeChangeStart -gt 0 -and $state.topRow -gt 0 -and -not $state.changeFlashing) 'First full-file visit centers the first change without flashing'
     $fullFileButton=$state.controls | Where-Object {$_.id -eq 'full-file'}
     Check ($fullFileButton.visible -and $fullFileButton.text -eq 'Full file') 'Full-file button is visible'
     Capture 'full-file.png'
+    $state=Invoke-App 'scrollbar' @('hover')
+    Check ($state.scrollbarHover -and $state.minimapMarkers -eq 3) 'Custom scrollbar hover keeps minimap markers'
+    Capture 'full-file-scrollbar-hover.png'
+    $state=Invoke-App 'scrollbar' @('leave')
+    Check (-not $state.scrollbarHover) 'Custom scrollbar hover state clears'
     $firstChange=$state.activeChangeStart
     $state=Invoke-App 'navigate-change' @('next')
     $blockHeight=$state.activeChangeEnd-$state.activeChangeStart+1
@@ -73,12 +78,17 @@ try {
     Invoke-App 'navigate-change' @('next') | Out-Null
     $state=Invoke-App 'navigate-change' @('previous')
     Check ($state.activeChangeStart -eq $nextChange -and $state.changeFlashing) 'Previous change navigation returns to the preceding block'
-    Invoke-App 'select-file' @('binary.dat') | Out-Null
+    $savedAppTop=$state.topRow
+    $firstLarge=Invoke-App 'select-file' @('large.txt')
+    Check ($firstLarge.activeChangeStart -ge 0 -and $firstLarge.topRow -eq $firstLarge.activeChangeStart) 'First full-file visit moves to the first change'
     $state=Invoke-App 'select-file' @('app.cpp')
-    Check ($state.topRow -eq 0 -and $state.activeChangeStart -eq -1) 'A previously visited full file is not repositioned automatically'
+    Check ($state.topRow -eq $savedAppTop -and $state.activeChangeStart -eq -1) 'A previously visited full file restores its scroll position'
+    Invoke-App 'refresh' | Out-Null
+    $state=Wait-Idle
+    Check ($state.selectedFile -eq 'app.cpp' -and $state.topRow -eq $savedAppTop) 'Refresh preserves per-file scroll position'
     Invoke-App 'full-file' @('off') | Out-Null
     $state=Wait-Idle
-    Check (-not $state.fullFile -and $state.rowCount -eq $compactRows) 'Full-file mode can be disabled'
+    Check (-not $state.fullFile -and $state.rowCount -eq $compactRows -and $state.minimapMarkers -eq 0) 'Full-file mode can be disabled'
     $next=Invoke-App 'navigate-file' @('1')
     Check ($next.selectedFile -eq $state.files[1].path) 'Next file navigation'
     Check (@($next.controls | Where-Object {$_.id -eq 'diff' -and $_.focused}).Count -eq 1) 'File navigation focuses diff'
@@ -91,6 +101,15 @@ try {
     Invoke-App 'view' @('side-by-side') | Out-Null
     Capture 'side-by-side.png'
     Invoke-App 'select-file' @('large.txt') | Out-Null
+    Invoke-App 'scroll' @('0') | Out-Null
+    $pressed=Invoke-App 'scrollbar' @('press-middle')
+    Check ($pressed.scrollbarDragging -and $pressed.topRow -gt 9000 -and $pressed.topRow -lt 11000) 'Scrollbar track press centers the thumb and begins dragging'
+    $released=Invoke-App 'scrollbar' @('release')
+    Check (-not $released.scrollbarDragging) 'Scrollbar dragging ends on mouse release'
+    Invoke-App 'scroll' @('0') | Out-Null
+    $dragged=Invoke-App 'scrollbar' @('drag-bottom')
+    Check ($dragged.topRow -gt 19900) 'Custom scrollbar thumb can be dragged to the bottom'
+    Invoke-App 'scroll' @('0') | Out-Null
     $largeChange=Invoke-App 'navigate-change' @('next')
     Check ($largeChange.topRow -eq $largeChange.activeChangeStart -and $largeChange.changeFlashing) 'A change block taller than the viewport keeps its first line visible'
     $before=Invoke-App 'scroll' @('15000')

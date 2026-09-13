@@ -3,7 +3,7 @@
 #include "app/RepositoryController.h"
 #include <commctrl.h>
 #include <memory>
-#include <unordered_set>
+#include <unordered_map>
 namespace gdv
 {
 class MainWindow
@@ -21,6 +21,8 @@ private:
   void refresh(bool seriesSelection = false);
   void loaded();
   void selectFile();
+  void rememberFileScroll();
+  std::wstring fileScrollKey(const std::wstring &path) const;
   void navigateFile(int direction);
   void toggleCommitMessage();
   int messageReturnIndex_{-1}, messageReturnTop_{};
@@ -54,8 +56,9 @@ private:
   HFONT font_{};
   UINT dpi_{96};
   std::wstring directory_, selectedPath_;
+  std::wstring scrollContext_;
   std::wstring automationDirectory_;
-  std::unordered_set<std::wstring> visitedFullFiles_;
+  std::unordered_map<std::wstring, int> fileScrollPositions_;
   std::string pendingResponse_;
   bool pendingClose_{};
   RepositorySnapshot snapshot_;

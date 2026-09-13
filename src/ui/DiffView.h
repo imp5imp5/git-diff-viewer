@@ -25,6 +25,10 @@ public:
   void scroll(int row) { scrollTo(row); }
   void navigateChange(int direction);
   void showFirstChange();
+  void setChangeMinimap(bool enabled);
+  int minimapMarkerCount() const { return minimap_ ? static_cast<int>(changeBlocks_.size()) : 0; }
+  bool scrollbarHovered() const { return scrollbarHover_; }
+  bool scrollbarDragging() const { return scrollbarDragging_; }
   bool changeFlashing() const { return flashFirst_ >= 0; }
   int activeChangeStart() const;
   int activeChangeEnd() const;
@@ -37,6 +41,11 @@ private:
   void scrollTo(int row);
   void showChangeBlock(size_t index, bool flash);
   void stopChangeFlash();
+  void drawVerticalScrollbar(HDC dc, const RECT &area) const;
+  void dragVerticalScrollbar(int y);
+  int scrollbarWidth() const;
+  RECT scrollbarRect() const;
+  RECT scrollbarThumbRect() const;
   void copy();
   void stopAutoScroll();
   bool autoScroll_{};
@@ -51,7 +60,8 @@ private:
   std::vector<PresentationRow> rows_;
   std::vector<ChangeBlock> changeBlocks_;
   std::wstring message_{L"Open a Git repository to review its local changes."};
-  bool side_{}, dragging_{}, plain_{};
+  bool side_{}, dragging_{}, plain_{}, minimap_{}, scrollbarDragging_{}, scrollbarHover_{};
+  int scrollbarDragOffset_{};
   int activeChange_{-1}, flashFirst_{-1}, flashLast_{-1};
   int top_{}, horizontal_{}, selected_{-1}, anchor_{-1}, rowHeight_{22}, charWidth_{8}, headerHeight_{62}, maxWidth_{}, wheel_{},
     zoomWheel_{}, numberDigits_{7}, fontPoints_{11};

@@ -56,8 +56,8 @@ HWND DiffView::create(HWND parent, HINSTANCE instance)
   wc.lpszClassName = L"GitDiffViewer.Diff";
   wc.hCursor = LoadCursorW(nullptr, IDC_IBEAM);
   RegisterClassW(&wc);
-  return CreateWindowExW(0, wc.lpszClassName, L"Diff", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | WS_VSCROLL | WS_HSCROLL, 0, 0,
-    100, 100, parent, nullptr, instance, this);
+  return CreateWindowExW(0, wc.lpszClassName, L"Diff", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | WS_HSCROLL, 0, 0, 100, 100,
+    parent, nullptr, instance, this);
 }
 void DiffView::setDpi(UINT dpi)
 {
@@ -157,13 +157,12 @@ void DiffView::updateScroll()
     return;
   int count = static_cast<int>(rows_.size()), page = pageRows();
   top_ = std::clamp(top_, 0, std::max(0, count - page));
-  SCROLLINFO vertical{sizeof(SCROLLINFO), SIF_RANGE | SIF_PAGE | SIF_POS, 0, std::max(0, count - 1), static_cast<UINT>(page), top_, 0};
-  SetScrollInfo(hwnd_, SB_VERT, &vertical, TRUE);
   RECT r{};
   GetClientRect(hwnd_, &r);
-  int width = plain_ ? std::max(1, static_cast<int>(r.right) - MulDiv(28, static_cast<int>(dpi_), 96))
-                     : std::max(1, static_cast<int>(side_ ? r.right / 2 : r.right) -
-                                     (side_ ? numberDigits_ + 2 : numberDigits_ * 2 + 3) * charWidth_);
+  int contentRight = std::max(1, static_cast<int>(r.right) - scrollbarWidth());
+  int width =
+    plain_ ? std::max(1, contentRight - MulDiv(28, static_cast<int>(dpi_), 96))
+           : std::max(1, (side_ ? contentRight / 2 : contentRight) - (side_ ? numberDigits_ + 2 : numberDigits_ * 2 + 3) * charWidth_);
   horizontal_ = std::clamp(horizontal_, 0, std::max(0, maxWidth_ - width));
   SCROLLINFO horizontal{
     sizeof(SCROLLINFO), SIF_RANGE | SIF_PAGE | SIF_POS, 0, std::max(0, maxWidth_ - 1), static_cast<UINT>(width), horizontal_, 0};
@@ -248,6 +247,103 @@ void DiffView::showFirstChange()
   if (!changeBlocks_.empty())
     showChangeBlock(0, false);
 }
+void DiffView::setChangeMinimap(bool enabled)
+{
+  if (minimap_ == enabled)
+    return;
+  minimap_ = enabled;
+  InvalidateRect(hwnd_, nullptr, FALSE);
+  UpdateWindow(hwnd_);
+}
+int DiffView::scrollbarWidth() const
+{
+  return std::max(MulDiv(14, static_cast<int>(dpi_), 96), GetSystemMetricsForDpi(SM_CXVSCROLL, dpi_));
+}
+RECT DiffView::scrollbarRect() const
+{
+  RECT area{};
+  GetClientRect(hwnd_, &area);
+  area.left = std::max<LONG>(0, area.right - scrollbarWidth());
+  return area;
+}
+RECT DiffView::scrollbarThumbRect() const
+{
+  RECT track = scrollbarRect();
+  InflateRect(&track, -MulDiv(2, static_cast<int>(dpi_), 96), -MulDiv(2, static_cast<int>(dpi_), 96));
+  int count = static_cast<int>(rows_.size()), page = pageRows(), height = track.bottom - track.top;
+  if (count <= page || height <= 0)
+    return track;
+  int thumbHeight = std::max(scrollbarWidth(), MulDiv(height, page, count));
+  thumbHeight = std::min(thumbHeight, height);
+  int range = std::max(1, count - page), travel = height - thumbHeight;
+  int y = track.top + MulDiv(top_, travel, range);
+  return {track.left, y, track.right, y + thumbHeight};
+}
+void DiffView::dragVerticalScrollbar(int y)
+{
+  RECT track = scrollbarRect(), thumb = scrollbarThumbRect();
+  InflateRect(&track, -MulDiv(2, static_cast<int>(dpi_), 96), -MulDiv(2, static_cast<int>(dpi_), 96));
+  int travel = (track.bottom - track.top) - (thumb.bottom - thumb.top);
+  int range = std::max(0, static_cast<int>(rows_.size()) - pageRows());
+  if (travel <= 0 || !range)
+    return;
+  int thumbTop = std::clamp(y - scrollbarDragOffset_, static_cast<int>(track.top), static_cast<int>(track.top) + travel);
+  scrollTo(MulDiv(thumbTop - track.top, range, travel));
+}
+void DiffView::drawVerticalScrollbar(HDC dc, const RECT &area) const
+{
+  RECT bar{std::max<LONG>(0, area.right - scrollbarWidth()), 0, area.right, area.bottom};
+  fill(dc, bar, ThemeColor::Window);
+  RECT border = bar;
+  border.right = border.left + std::max(1, MulDiv(1, static_cast<int>(dpi_), 96));
+  fill(dc, border, ThemeColor::Border);
+  RECT thumb = scrollbarThumbRect();
+  COLORREF thumbColor = themeColor(ThemeColor::Border);
+  if (scrollbarHover_ || scrollbarDragging_)
+  {
+    COLORREF target = themeColor(ThemeColor::Text);
+    auto mix = [&](int a, int b) { return (a * 3 + b) / 4; };
+    thumbColor = RGB(mix(GetRValue(thumbColor), GetRValue(target)), mix(GetGValue(thumbColor), GetGValue(target)),
+      mix(GetBValue(thumbColor), GetBValue(target)));
+  }
+  fillColor(dc, thumb, thumbColor);
+  if (!minimap_ || changeBlocks_.empty() || rows_.empty())
+    return;
+  RECT track = bar;
+  InflateRect(&track, -MulDiv(2, static_cast<int>(dpi_), 96), -MulDiv(2, static_cast<int>(dpi_), 96));
+  int availableWidth = std::max(1, static_cast<int>(track.right - track.left));
+  int markerWidth = std::max(2, availableWidth / 2);
+  int markerLeft = (track.left + track.right - markerWidth) / 2;
+  track.left = markerLeft;
+  track.right = markerLeft + markerWidth;
+  int count = static_cast<int>(rows_.size()), height = track.bottom - track.top;
+  int thickness = std::max(1, (height + 1023) / 1024);
+  for (const auto &block : changeBlocks_)
+  {
+    int first = track.top + MulDiv(static_cast<int>(block.first), height, count);
+    int last = track.top + MulDiv(static_cast<int>(block.last + 1), height, count);
+    if (last - first < thickness)
+    {
+      int center = (first + last) / 2;
+      first = std::clamp(center - thickness / 2, static_cast<int>(track.top), static_cast<int>(track.bottom) - thickness);
+      last = first + thickness;
+    }
+    RECT marker{track.left, first, track.right, last};
+    if (block.added && block.removed)
+    {
+      int center = (marker.left + marker.right) / 2;
+      auto removed = marker;
+      removed.right = center;
+      if (removed.left < removed.right)
+        fill(dc, removed, ThemeColor::RemovedIndicator);
+      marker.left = center;
+      if (marker.left < marker.right)
+        fill(dc, marker, ThemeColor::AddedIndicator);
+    }
+    else
+      fill(dc, marker, block.removed ? ThemeColor::RemovedIndicator : ThemeColor::AddedIndicator);
+  }
+}
 const DiffLine *DiffView::line(const PresentationRow &row, size_t index) const
 {
   if (!file_ || row.hunk == noLine || index == noLine)
@@ -272,15 +368,16 @@ void DiffView::paint(HDC printDC)
   auto oldFont = SelectObject(dc, font_);
   SetBkMode(dc, TRANSPARENT);
   fill(dc, area, ThemeColor::Surface);
-  int pad = MulDiv(14, static_cast<int>(dpi_), 96), half = area.right / 2;
-  RECT header{0, 0, area.right, headerHeight_};
+  int contentRight = std::max(1, static_cast<int>(area.right) - scrollbarWidth());
+  int pad = MulDiv(14, static_cast<int>(dpi_), 96), half = contentRight / 2;
+  RECT header{0, 0, contentRight, headerHeight_};
   if (!plain_)
   {
     fill(dc, header, ThemeColor::Window);
-    RECT title{pad, 0, area.right - pad, headerHeight_ / 2};
+    RECT title{pad, 0, contentRight - pad, headerHeight_ / 2};
     text(dc, title, file_ ? file_->path() : L"GitDiffViewer", ThemeColor::Title,
       DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
-    RECT labels{pad, headerHeight_ / 2, area.right - pad, headerHeight_};
+    RECT labels{pad, headerHeight_ / 2, contentRight - pad, headerHeight_};
     if (side_)
     {
       auto left = labels;
@@ -294,7 +391,7 @@ void DiffView::paint(HDC printDC)
   }
   if (!file_)
   {
-    RECT empty{pad * 2, headerHeight_ + pad * 2, area.right - pad * 2, area.bottom - pad};
+    RECT empty{pad * 2, headerHeight_ + pad * 2, contentRight - pad * 2, area.bottom - pad};
     text(dc, empty, message_, ThemeColor::MutedText, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
   }
   auto drawCell = [&](RECT r, const DiffLine *l, bool oldSide, bool unified, bool selected, bool flashing) {
@@ -349,7 +446,7 @@ void DiffView::paint(HDC printDC)
   {
     int index = top_ + n;
     const auto &row = rows_[index];
-    RECT r{0, headerHeight_ + n * rowHeight_, area.right, headerHeight_ + (n + 1) * rowHeight_};
+    RECT r{0, headerHeight_ + n * rowHeight_, contentRight, headerHeight_ + (n + 1) * rowHeight_};
     bool selected = anchor_ >= 0 && selected_ >= 0 && index >= std::min(anchor_, selected_) && index <= std::max(anchor_, selected_);
     bool flashing = index >= flashFirst_ && index <= flashLast_;
     if (!row.meta.empty())
@@ -390,6 +487,7 @@ void DiffView::paint(HDC printDC)
     DeleteObject(pen);
     DeleteObject(brush);
   }
+  drawVerticalScrollbar(dc, area);
   BitBlt(target, 0, 0, area.right, area.bottom, dc, 0, 0, SRCCOPY);
   SelectObject(dc, oldFont);
   SelectObject(dc, oldBitmap);
@@ -476,13 +574,11 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
       InvalidateRect(hwnd_, nullptr, FALSE);
       return 0;
     case WM_GETDLGCODE: return DLGC_WANTARROWS | DLGC_WANTCHARS;
-    case WM_VSCROLL:
     case WM_HSCROLL:
     {
-      bool vertical = msg == WM_VSCROLL;
       SCROLLINFO info{sizeof(info), SIF_ALL};
-      GetScrollInfo(hwnd_, vertical ? SB_VERT : SB_HORZ, &info);
-      int pos = vertical ? top_ : horizontal_, step = vertical ? 1 : charWidth_ * 3;
+      GetScrollInfo(hwnd_, SB_HORZ, &info);
+      int pos = horizontal_, step = charWidth_ * 3;
       switch (LOWORD(w))
       {
         case SB_LINEUP: pos -= step; break;
@@ -494,21 +590,21 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
         case SB_TOP: pos = 0; break;
         case SB_BOTTOM: pos = info.nMax; break;
       }
-      if (vertical)
-        top_ = pos;
-      else
-        horizontal_ = pos;
+      horizontal_ = pos;
       updateScroll();
       InvalidateRect(hwnd_, nullptr, FALSE);
       return 0;
     }
     case WM_MBUTTONDOWN:
+    {
       if (autoScroll_)
       {
         stopAutoScroll();
         return 0;
       }
-      if (rows_.empty() || GET_Y_LPARAM(l) < headerHeight_)
+      POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+      RECT bar = scrollbarRect();
+      if (rows_.empty() || GET_Y_LPARAM(l) < headerHeight_ || PtInRect(&bar, point))
         return 0;
       SetFocus(hwnd_);
       dragging_ = false;
@@ -521,6 +617,7 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
       SetTimer(hwnd_, autoScrollTimer, 16, nullptr);
       InvalidateRect(hwnd_, nullptr, FALSE);
       return 0;
+    }
     case WM_MBUTTONUP: return 0;
     case WM_TIMER:
       if (w == changeFlashTimer && changeFlashing())
@@ -555,9 +652,24 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
         SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
         return TRUE;
       }
+      if (LOWORD(l) == HTCLIENT)
+      {
+        POINT point{};
+        GetCursorPos(&point);
+        ScreenToClient(hwnd_, &point);
+        RECT bar = scrollbarRect();
+        if (PtInRect(&bar, point))
+        {
+          SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+          return TRUE;
+        }
+      }
       break;
     case WM_KILLFOCUS:
-    case WM_CANCELMODE: stopAutoScroll(); break;
+    case WM_CANCELMODE:
+      scrollbarDragging_ = false;
+      stopAutoScroll();
+      break;
     case WM_RBUTTONDOWN:
       if (autoScroll_)
       {
@@ -586,6 +698,22 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
         return 0;
       }
       SetFocus(hwnd_);
+      POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+      RECT bar = scrollbarRect();
+      if (PtInRect(&bar, point))
+      {
+        RECT thumb = scrollbarThumbRect();
+        if (static_cast<int>(rows_.size()) > pageRows())
+        {
+          scrollbarDragging_ = true;
+          scrollbarDragOffset_ = PtInRect(&thumb, point) ? point.y - thumb.top : (thumb.bottom - thumb.top) / 2;
+          SetCapture(hwnd_);
+          dragVerticalScrollbar(point.y);
+        }
+        scrollbarHover_ = true;
+        InvalidateRect(hwnd_, &bar, FALSE);
+        return 0;
+      }
       if (GET_Y_LPARAM(l) < headerHeight_ || rows_.empty())
         return 0;
       selected_ = std::min(static_cast<int>(rows_.size()) - 1, top_ + (GET_Y_LPARAM(l) - headerHeight_) / rowHeight_);
@@ -597,6 +725,22 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
       return 0;
     }
     case WM_MOUSEMOVE:
+    {
+      POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+      RECT bar = scrollbarRect();
+      bool hover = PtInRect(&bar, point) || scrollbarDragging_;
+      if (hover != scrollbarHover_)
+      {
+        scrollbarHover_ = hover;
+        InvalidateRect(hwnd_, &bar, FALSE);
+      }
+      TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd_, 0};
+      TrackMouseEvent(&tracking);
+      if (scrollbarDragging_)
+      {
+        dragVerticalScrollbar(point.y);
+        return 0;
+      }
       if (dragging_ && !rows_.empty())
       {
         selected_ = std::clamp(top_ + (GET_Y_LPARAM(l) - headerHeight_) / rowHeight_, 0, static_cast<int>(rows_.size()) - 1);
@@ -607,12 +751,32 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
         InvalidateRect(hwnd_, nullptr, FALSE);
       }
       return 0;
+    }
+    case WM_MOUSELEAVE:
+      if (scrollbarHover_ && !scrollbarDragging_)
+      {
+        scrollbarHover_ = false;
+        RECT bar = scrollbarRect();
+        InvalidateRect(hwnd_, &bar, FALSE);
+      }
+      return 0;
     case WM_LBUTTONUP:
+      if (scrollbarDragging_)
+      {
+        scrollbarDragging_ = false;
+        if (GetCapture() == hwnd_)
+          ReleaseCapture();
+        RECT bar = scrollbarRect();
+        InvalidateRect(hwnd_, &bar, FALSE);
+        return 0;
+      }
       dragging_ = false;
-      ReleaseCapture();
+      if (GetCapture() == hwnd_)
+        ReleaseCapture();
       return 0;
     case WM_CAPTURECHANGED:
       dragging_ = false;
+      scrollbarDragging_ = false;
       stopAutoScroll();
       return 0;
     case WM_KEYDOWN:

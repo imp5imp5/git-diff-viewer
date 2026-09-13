@@ -52,25 +52,35 @@ std::vector<PresentationRow> buildPresentation(const FileDiff &file, bool side)
 }
 std::vector<ChangeBlock> findChangeBlocks(const FileDiff &file, const std::vector<PresentationRow> &rows)
 {
-  auto changed = [&](const PresentationRow &row) {
+  auto types = [&](const PresentationRow &row) {
+    std::pair<bool, bool> result;
     if (row.hunk == noLine || row.hunk >= file.hunks.size())
-      return false;
+      return result;
     const auto &lines = file.hunks[row.hunk].lines;
     for (auto index : {row.left, row.right})
-      if (index != noLine && index < lines.size() &&
-          (lines[index].type == DiffLineType::Added || lines[index].type == DiffLineType::Removed))
-        return true;
-    return false;
+      if (index != noLine && index < lines.size())
+      {
+        result.first |= lines[index].type == DiffLineType::Added;
+        result.second |= lines[index].type == DiffLineType::Removed;
+      }
+    return result;
   };
   std::vector<ChangeBlock> blocks;
   for (size_t i = 0; i < rows.size(); ++i)
-    if (changed(rows[i]))
+  {
+    auto [added, removed] = types(rows[i]);
+    if (added || removed)
     {
       if (blocks.empty() || blocks.back().last + 1 != i)
-        blocks.push_back({i, i});
+        blocks.push_back({i, i, added, removed});
       else
+      {
         blocks.back().last = i;
+        blocks.back().added |= added;
+        blocks.back().removed |= removed;
+      }
     }
+  }
   return blocks;
 }
 size_t correspondingRow(const std::vector<PresentationRow> &from, size_t row, const std::vector<PresentationRow> &to)

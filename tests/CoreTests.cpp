@@ -21,8 +21,11 @@ try
   check(f.hunks[0].lines[2].newLine == 2, "new number");
   auto u = buildPresentation(f, false), s = buildPresentation(f, true);
   auto unifiedBlocks = findChangeBlocks(f, u), sideBlocks = findChangeBlocks(f, s);
-  check(unifiedBlocks.size() == 1 && unifiedBlocks[0].last - unifiedBlocks[0].first == 2, "unified change block");
-  check(sideBlocks.size() == 1 && sideBlocks[0].last - sideBlocks[0].first == 1, "side-by-side change block");
+  check(unifiedBlocks.size() == 1 && unifiedBlocks[0].last - unifiedBlocks[0].first == 2 && unifiedBlocks[0].added &&
+          unifiedBlocks[0].removed,
+    "unified change block");
+  check(sideBlocks.size() == 1 && sideBlocks[0].last - sideBlocks[0].first == 1 && sideBlocks[0].added && sideBlocks[0].removed,
+    "side-by-side change block");
   check(u.size() == 7 && s.size() == 6, "alignment");
   check(s[2].left == 1 && s[2].right == 2, "replacement");
   check(s[3].left == noLine && s[3].right == 3, "filler");
