@@ -34,23 +34,8 @@ enum
   Theme,
   FullFile
 };
-constexpr auto settingsKey = L"Software\\gaijin\\git_diff_viewer";
 constexpr int minFilePaneWidth = 220;
 constexpr int minDiffPaneWidth = 300;
-DWORD readSetting(const wchar_t *name, DWORD fallback)
-{
-  DWORD value = fallback, size = sizeof(value);
-  RegGetValueW(HKEY_CURRENT_USER, settingsKey, name, RRF_RT_REG_DWORD, nullptr, &value, &size);
-  return value;
-}
-std::wstring readString(const wchar_t *name)
-{
-  wchar_t value[4096]{};
-  DWORD size = sizeof(value);
-  if (RegGetValueW(HKEY_CURRENT_USER, settingsKey, name, RRF_RT_REG_SZ, nullptr, value, &size) != ERROR_SUCCESS)
-    return {};
-  return value;
-}
 std::wstring getText(HWND h)
 {
   int n = GetWindowTextLengthW(h);
@@ -77,9 +62,11 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
   instance_ = instance;
   directory_ = std::move(directory);
   automationDirectory_ = std::move(automationDirectory);
-  side_ = automationDirectory_.empty() && readSetting(L"SideBySide", 0) != 0;
-  darkTheme = !automationDirectory_.empty() || readSetting(L"DarkTheme", 1) != 0;
-  filePaneWidth_ = automationDirectory_.empty() ? static_cast<int>(std::min<DWORD>(readSetting(L"FilePaneWidth", 0), 4096)) : 0;
+  if (automationDirectory_.empty())
+    settings_ = Settings::loadUser();
+  side_ = automationDirectory_.empty() && settings_.number(L"SideBySide", 0) != 0;
+  darkTheme = !automationDirectory_.empty() || settings_.number(L"DarkTheme", 1) != 0;
+  filePaneWidth_ = automationDirectory_.empty() ? static_cast<int>(std::min<DWORD>(settings_.number(L"FilePaneWidth", 0), 4096)) : 0;
   WNDCLASSEXW wc{sizeof(wc)};
   wc.hInstance = instance;
   wc.lpfnWndProc = procedure;
@@ -98,10 +85,7 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
   if (automationDirectory_.empty())
   {
     WINDOWPLACEMENT placement{sizeof(placement)};
-    DWORD bytes = sizeof(placement);
-    if (RegGetValueW(HKEY_CURRENT_USER, settingsKey, L"WindowPlacement", RRF_RT_REG_BINARY, nullptr, &placement, &bytes) ==
-          ERROR_SUCCESS &&
-        bytes == sizeof(placement))
+    if (settings_.windowPlacement(placement))
     {
       placement.length = sizeof(placement);
       if (placement.showCmd != SW_SHOWMAXIMIZED)
@@ -170,7 +154,7 @@ void MainWindow::createControls()
   source_ = control(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL, Source);
   for (auto name : {L"Staged", L"Unstaged", L"All local · HEAD", L"Ready to push", L"Single commit", L"Commit range"})
     SendMessageW(source_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name));
-  SendMessageW(source_, CB_SETCURSEL, automationDirectory_.empty() ? std::min<DWORD>(5, readSetting(L"Source", 1)) : 1, 0);
+  SendMessageW(source_, CB_SETCURSEL, automationDirectory_.empty() ? std::min<DWORD>(5, settings_.number(L"Source", 1)) : 1, 0);
   view_ = control(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS, View);
   SendMessageW(view_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Unified"));
   SendMessageW(view_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Side-by-side"));
@@ -216,12 +200,12 @@ void MainWindow::createControls()
   updateFonts();
   if (automationDirectory_.empty())
   {
-    diff_.zoom(static_cast<int>(std::clamp<DWORD>(readSetting(L"FontSize", 11), 6, 40)) - diff_.fontSize());
-    SetWindowTextW(base_, readString(L"Base").c_str());
-    auto target = readString(L"Target");
+    diff_.zoom(static_cast<int>(std::clamp<DWORD>(settings_.number(L"FontSize", 11), 6, 40)) - diff_.fontSize());
+    SetWindowTextW(base_, settings_.string(L"Base").c_str());
+    auto target = settings_.string(L"Target");
     if (!target.empty())
       SetWindowTextW(target_, target.c_str());
-    savedCommit_ = readString(L"Commit");
+    savedCommit_ = settings_.string(L"Commit");
   }
   applyTheme();
   sourceChanged();
@@ -797,33 +781,23 @@ void MainWindow::saveSettings()
 {
   if (!automationDirectory_.empty())
     return;
-  HKEY key{};
-  if (RegCreateKeyExW(HKEY_CURRENT_USER, settingsKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS)
-    return;
-  auto number = [&](const wchar_t *name, DWORD value) {
-    RegSetValueExW(key, name, 0, REG_DWORD, reinterpret_cast<const BYTE *>(&value), sizeof(value));
-  };
-  auto string = [&](const wchar_t *name, const std::wstring &value) {
-    RegSetValueExW(key, name, 0, REG_SZ, reinterpret_cast<const BYTE *>(value.c_str()),
-      static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
-  };
-  number(L"Source", static_cast<DWORD>(source(source_)));
-  number(L"SideBySide", side_);
-  number(L"FontSize", diff_.fontSize());
-  number(L"DarkTheme", darkTheme);
-  number(L"FilePaneWidth", static_cast<DWORD>(filePaneWidth_));
-  string(L"Base", getText(base_));
-  string(L"Target", getText(target_));
+  settings_.setNumber(L"Source", static_cast<DWORD>(source(source_)));
+  settings_.setNumber(L"SideBySide", side_);
+  settings_.setNumber(L"FontSize", diff_.fontSize());
+  settings_.setNumber(L"DarkTheme", darkTheme);
+  settings_.setNumber(L"FilePaneWidth", static_cast<DWORD>(filePaneWidth_));
+  settings_.setString(L"Base", getText(base_));
+  settings_.setString(L"Target", getText(target_));
   auto index = SendMessageW(commits_, CB_GETCURSEL, 0, 0);
-  string(L"Commit", index > 0 && static_cast<size_t>(index) <= series_.size() ? series_[index - 1].id : L"");
+  settings_.setString(L"Commit", index > 0 && static_cast<size_t>(index) <= series_.size() ? series_[index - 1].id : L"");
   WINDOWPLACEMENT placement{sizeof(placement)};
   if (GetWindowPlacement(hwnd_, &placement))
   {
     if (placement.showCmd == SW_SHOWMINIMIZED)
       placement.showCmd = placement.flags & WPF_RESTORETOMAXIMIZED ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL;
-    RegSetValueExW(key, L"WindowPlacement", 0, REG_BINARY, reinterpret_cast<const BYTE *>(&placement), sizeof(placement));
+    settings_.setWindowPlacement(placement);
   }
-  RegCloseKey(key);
+  settings_.save();
 }
 void MainWindow::applyTheme()
 {

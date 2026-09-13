@@ -1,12 +1,12 @@
 @README.md
 
-Preferences are saved on close under:
+Preferences are saved on close in the user's local application-data directory:
 
 ```text
-HKEY_CURRENT_USER\Software\gaijin\git_diff_viewer
+%LOCALAPPDATA%\Gaijin\GitDiffViewer\settings.ini
 ```
 
-Saved values include normal window position and size, maximized state, comparison source, diff layout, font size, base and target refs, the selected local commit SHA, and theme. The repository itself is chosen from the launch directory or command-line argument.
+The UTF-8 file is replaced atomically. Existing values under `HKEY_CURRENT_USER\Software\gaijin\git_diff_viewer` are imported once and the legacy key is removed only after a successful file write. Saved values include normal window position and size, maximized state, comparison source, diff layout, font size, base and target refs, the selected local commit SHA, and theme. The repository itself is chosen from the launch directory or command-line argument.
 
 ## Tests
 
@@ -16,7 +16,7 @@ Build first, then run:
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The suite includes diff parser/presentation tests, Git integration tests, and application interface tests. Repository tests use temporary fixtures. Interface tests launch the application through its opt-in automation interface and normally write PNG artifacts beneath `build\interface-Release`.
+The suite includes diff parser/presentation tests, settings persistence tests, Git integration tests, and application interface tests. Repository tests use temporary fixtures. Interface tests launch the application through its opt-in automation interface and normally write PNG artifacts beneath `build\interface-Release`.
 
 To skip PNG capture in interface tests:
 
@@ -60,7 +60,7 @@ $files | ForEach-Object { & $formatter -i --style=file $_.FullName }
 
 ### Application automation
 
-Pass `--automation-dir <directory>` to enable a local file-based command interface for tests and tooling. Use a separate directory per application instance and one client per directory. Automation sessions do not read or write user registry settings.
+Pass `--automation-dir <directory>` to enable a local file-based command interface for tests and tooling. Use a separate directory per application instance and one client per directory. Automation sessions do not read or write the user's configuration file.
 
 Example, from the project directory:
 

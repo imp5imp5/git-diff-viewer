@@ -73,7 +73,13 @@ You can also supply a directory explicitly:
 & .\build\Release\gfd.exe "D:\dagor"
 ```
 
-On the first launch, the application opens in **Unstaged** mode with the dark theme. Later launches restore the saved preferences.
+On the first launch, the application opens in **Unstaged** mode with the dark theme. Later launches restore the saved preferences from:
+
+```text
+%LOCALAPPDATA%\Gaijin\GitDiffViewer\settings.ini
+```
+
+The UTF-8 file is replaced atomically when the application closes. On the first launch of this version, existing preferences are imported from `HKEY_CURRENT_USER\Software\gaijin\git_diff_viewer`. The old registry key is removed only after the new file has been written successfully.
 
 ### Choose a comparison
 

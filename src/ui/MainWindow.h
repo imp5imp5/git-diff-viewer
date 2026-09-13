@@ -1,5 +1,6 @@
 #pragma once
 #include "DiffView.h"
+#include "Settings.h"
 #include "app/RepositoryController.h"
 #include <commctrl.h>
 #include <memory>
@@ -74,6 +75,7 @@ private:
   HWND commitPopup_{};
   std::vector<Commit> series_;
   std::unique_ptr<RepositoryController> controller_;
+  Settings settings_;
   DiffView diff_;
   bool side_{}, fullFile_{}, loading_{}, initialLoad_{true};
 };
