@@ -29,7 +29,10 @@ enum
   ZoomOut,
   NextFile,
   PreviousFile,
-  Theme
+  NextChange,
+  PreviousChange,
+  Theme,
+  FullFile
 };
 constexpr auto settingsKey = L"Software\\gaijin\\git_diff_viewer";
 constexpr int minFilePaneWidth = 220;
@@ -117,13 +120,27 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
   ACCEL entries[] = {{FVIRTKEY | FCONTROL, 'R', Refresh}, {FVIRTKEY, VK_F5, Refresh}, {FVIRTKEY | FCONTROL | FSHIFT, 'D', Toggle},
     {FVIRTKEY | FCONTROL | FSHIFT, 'S', Screenshot}, {FVIRTKEY | FCONTROL, VK_OEM_PLUS, ZoomIn},
     {FVIRTKEY | FCONTROL, VK_OEM_MINUS, ZoomOut}, {FVIRTKEY | FCONTROL | FSHIFT, VK_OEM_PLUS, ZoomIn},
-    {FVIRTKEY | FCONTROL, VK_DOWN, NextFile}, {FVIRTKEY | FCONTROL, VK_UP, PreviousFile}, {FVIRTKEY | FCONTROL, VK_ADD, ZoomIn},
+    {FVIRTKEY | FCONTROL, VK_DOWN, NextFile}, {FVIRTKEY | FCONTROL, VK_UP, PreviousFile}, {FVIRTKEY | FCONTROL, VK_NEXT, NextChange},
+    {FVIRTKEY | FCONTROL, VK_PRIOR, PreviousChange}, {FVIRTKEY | FCONTROL, VK_ADD, ZoomIn},
     {FVIRTKEY | FCONTROL, VK_SUBTRACT, ZoomOut}};
   HACCEL accel = CreateAcceleratorTableW(entries, static_cast<int>(std::size(entries)));
   MSG msg{};
   int result = 0;
   while ((result = GetMessageW(&msg, nullptr, 0, 0)) > 0)
   {
+    if (msg.message == WM_KEYDOWN && msg.wParam == 'F' && !(msg.lParam & (1LL << 30)) && !(GetKeyState(VK_CONTROL) & 0x8000) &&
+        !(GetKeyState(VK_MENU) & 0x8000))
+    {
+      auto focus = GetFocus();
+      bool editing = focus == base_ || focus == target_ || focus == source_ || focus == view_ || focus == commits_;
+      bool dropdown = SendMessageW(source_, CB_GETDROPPEDSTATE, 0, 0) || SendMessageW(view_, CB_GETDROPPEDSTATE, 0, 0) ||
+                      SendMessageW(commits_, CB_GETDROPPEDSTATE, 0, 0);
+      if (!editing && !dropdown)
+      {
+        SendMessageW(fullFileButton_, BM_CLICK, 0, 0);
+        continue;
+      }
+    }
     if (msg.message == WM_KEYDOWN && msg.wParam == VK_SPACE &&
         (GetFocus() == diff_.handle() || GetFocus() == files_ || GetFocus() == commits_) &&
         !SendMessageW(commits_, CB_GETDROPPEDSTATE, 0, 0))
@@ -158,6 +175,7 @@ void MainWindow::createControls()
   SendMessageW(view_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Unified"));
   SendMessageW(view_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Side-by-side"));
   SendMessageW(view_, CB_SETCURSEL, side_ ? 1 : 0, 0);
+  fullFileButton_ = control(L"BUTTON", L"Full file", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE, FullFile);
   themeButton_ = control(L"BUTTON", L"Light theme", WS_TABSTOP, Theme);
   baseLabel_ = control(L"STATIC", L"Base branch / ref", 0, 0);
   base_ = control(L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, Base);
@@ -253,8 +271,9 @@ void MainWindow::layout()
   move(refresh_, pad, pad, scale(80), row);
   move(source_, pad + scale(92), pad + scale(1), scale(180), scale(240));
   move(view_, pad + scale(284), pad + scale(1), scale(145), scale(160));
-  move(themeButton_, pad + scale(441), pad, scale(115), row);
-  int infoX = pad + scale(568);
+  move(fullFileButton_, pad + scale(441), pad, scale(100), row);
+  move(themeButton_, pad + scale(553), pad, scale(115), row);
+  int infoX = pad + scale(680);
   move(info_, infoX, pad, width - infoX - pad, row);
   int y = pad + row + gap;
   auto mode = source(source_);
@@ -337,7 +356,7 @@ void MainWindow::refresh(bool seriesSelection)
                      L"Refresh\nCtrl+Shift+D  Toggle diff layout");
     return;
   }
-  CompareRequest request{directory_, source(source_), getText(base_), getText(target_)};
+  CompareRequest request{directory_, source(source_), getText(base_), getText(target_), fullFile_};
   if (seriesSelection)
   {
     auto index = SendMessageW(commits_, CB_GETCURSEL, 0, 0);
@@ -366,6 +385,7 @@ void MainWindow::loaded()
   {
     diff_.setMessage(L"Unable to load changes\n\n" + result->error);
     snapshot_ = {};
+    visitedFullFiles_.clear();
     selectedPath_.clear();
     SendMessageW(files_, LB_RESETCONTENT, 0, 0);
     SetWindowTextW(info_, directory_.c_str());
@@ -381,6 +401,7 @@ void MainWindow::loaded()
   // Invalidate the view's pointer before replacing the owning document.
   diff_.setFile(nullptr);
   snapshot_ = std::move(result->snapshot);
+  visitedFullFiles_.clear();
   messageReturnIndex_ = -1;
   fileChanges_.clear();
   for (const auto &file : snapshot_.document.files)
@@ -479,7 +500,8 @@ void MainWindow::loaded()
   if (!snapshot_.notice.empty())
     status += L"    " + snapshot_.notice;
   else
-    status += L"    |    F5 Refresh · Ctrl+Down/Up File · Space Commit message · Ctrl+Shift+D View · Ctrl+C Copy";
+    status += L"    |    F5 Refresh · F Full file · Ctrl+PgUp/PgDn Change · Ctrl+Down/Up File · Space Commit message · Ctrl+Shift+D "
+              L"View · Ctrl+C Copy";
   SetWindowTextW(status_, status.c_str());
   layout();
 }
@@ -536,6 +558,8 @@ void MainWindow::selectFile()
     auto &file = snapshot_.document.files[static_cast<size_t>(index)];
     selectedPath_ = file.path();
     diff_.setFile(&file);
+    if (fullFile_ && visitedFullFiles_.insert(selectedPath_).second)
+      diff_.showFirstChange();
   }
 }
 void MainWindow::toggle()
@@ -543,6 +567,12 @@ void MainWindow::toggle()
   side_ = !side_;
   diff_.setSideBySide(side_);
   SendMessageW(view_, CB_SETCURSEL, side_ ? 1 : 0, 0);
+}
+void MainWindow::toggleFullFile()
+{
+  fullFile_ = SendMessageW(fullFileButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+  bool selectedCommit = source(source_) == ChangeSource::ReadyToPush && SendMessageW(commits_, CB_GETCURSEL, 0, 0) > 0;
+  refresh(selectedCommit);
 }
 void MainWindow::previewCommit(int index)
 {
@@ -997,13 +1027,19 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
         reinterpret_cast<NMTTDISPINFOW *>(l)->lpszText = infoTooltipText_.data();
         return 0;
       }
-      if (hdr->code == NM_CUSTOMDRAW && (hdr->hwndFrom == refresh_ || hdr->hwndFrom == compare_ || hdr->hwndFrom == themeButton_) &&
+      if (hdr->code == NM_CUSTOMDRAW &&
+          (hdr->hwndFrom == refresh_ || hdr->hwndFrom == compare_ || hdr->hwndFrom == themeButton_ ||
+            hdr->hwndFrom == fullFileButton_) &&
           darkTheme)
       {
         auto draw = reinterpret_cast<NMCUSTOMDRAW *>(l);
         if (draw->dwDrawStage == CDDS_PREPAINT)
         {
-          FillRect(draw->hdc, &draw->rc, fieldBrush_);
+          bool checked = hdr->hwndFrom == fullFileButton_ && SendMessageW(fullFileButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+          auto buttonBrush = checked ? CreateSolidBrush(themeColor(ThemeColor::ListSelection)) : fieldBrush_;
+          FillRect(draw->hdc, &draw->rc, buttonBrush);
+          if (checked)
+            DeleteObject(buttonBrush);
           auto border = CreateSolidBrush(themeColor(ThemeColor::Border));
           FrameRect(draw->hdc, &draw->rc, border);
           DeleteObject(border);
@@ -1113,6 +1149,10 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
           darkTheme = !darkTheme;
           applyTheme();
           break;
+        case FullFile:
+          if (HIWORD(w) == BN_CLICKED)
+            toggleFullFile();
+          break;
         case Refresh: refresh(); break;
         case Compare: refresh(); break;
         case Source:
@@ -1141,6 +1181,14 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
         case ZoomIn: diff_.zoom(1); break;
         case NextFile: navigateFile(1); break;
         case PreviousFile: navigateFile(-1); break;
+        case NextChange:
+          SetFocus(diff_.handle());
+          diff_.navigateChange(1);
+          break;
+        case PreviousChange:
+          SetFocus(diff_.handle());
+          diff_.navigateChange(-1);
+          break;
         case ZoomOut: diff_.zoom(-1); break;
       }
       return 0;

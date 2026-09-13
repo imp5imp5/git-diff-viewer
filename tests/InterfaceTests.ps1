@@ -53,6 +53,32 @@ try {
     Invoke-App 'source' @('staged') | Out-Null
     $state=Wait-Idle
     Check ($state.files.Count -eq 9 -and $state.selectedFile -eq 'app.cpp') 'Initial staged files'
+    $compactRows=$state.rowCount
+    Invoke-App 'full-file' @('on') | Out-Null
+    $state=Wait-Idle
+    Check ($state.fullFile -and $state.selectedFile -eq 'app.cpp' -and $state.rowCount -gt $compactRows) 'Full-file mode loads omitted context'
+    Check ($state.activeChangeStart -gt 0 -and $state.topRow -gt 0 -and -not $state.changeFlashing) 'First full-file visit centers the first change without flashing'
+    $fullFileButton=$state.controls | Where-Object {$_.id -eq 'full-file'}
+    Check ($fullFileButton.visible -and $fullFileButton.text -eq 'Full file') 'Full-file button is visible'
+    Capture 'full-file.png'
+    $firstChange=$state.activeChangeStart
+    $state=Invoke-App 'navigate-change' @('next')
+    $blockHeight=$state.activeChangeEnd-$state.activeChangeStart+1
+    $expectedTop=$state.activeChangeStart-[Math]::Floor(($state.visibleRowCount-$blockHeight)/2)
+    Check ($state.activeChangeStart -gt $firstChange -and $state.topRow -eq $expectedTop -and $state.changeFlashing) 'Next change is centered and flashes'
+    Start-Sleep -Milliseconds 150
+    $state=Invoke-App 'state'
+    Check (-not $state.changeFlashing) 'Change flash ends after 0.1 seconds'
+    $nextChange=$state.activeChangeStart
+    Invoke-App 'navigate-change' @('next') | Out-Null
+    $state=Invoke-App 'navigate-change' @('previous')
+    Check ($state.activeChangeStart -eq $nextChange -and $state.changeFlashing) 'Previous change navigation returns to the preceding block'
+    Invoke-App 'select-file' @('binary.dat') | Out-Null
+    $state=Invoke-App 'select-file' @('app.cpp')
+    Check ($state.topRow -eq 0 -and $state.activeChangeStart -eq -1) 'A previously visited full file is not repositioned automatically'
+    Invoke-App 'full-file' @('off') | Out-Null
+    $state=Wait-Idle
+    Check (-not $state.fullFile -and $state.rowCount -eq $compactRows) 'Full-file mode can be disabled'
     $next=Invoke-App 'navigate-file' @('1')
     Check ($next.selectedFile -eq $state.files[1].path) 'Next file navigation'
     Check (@($next.controls | Where-Object {$_.id -eq 'diff' -and $_.focused}).Count -eq 1) 'File navigation focuses diff'
@@ -65,6 +91,8 @@ try {
     Invoke-App 'view' @('side-by-side') | Out-Null
     Capture 'side-by-side.png'
     Invoke-App 'select-file' @('large.txt') | Out-Null
+    $largeChange=Invoke-App 'navigate-change' @('next')
+    Check ($largeChange.topRow -eq $largeChange.activeChangeStart -and $largeChange.changeFlashing) 'A change block taller than the viewport keeps its first line visible'
     $before=Invoke-App 'scroll' @('15000')
     $after=Invoke-App 'view' @('unified')
     Check ($after.topRow -eq $before.topRow -and $after.selectedFile -eq 'large.txt' -and -not $after.loading) 'Toggle preserves position without refresh'

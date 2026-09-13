@@ -17,6 +17,7 @@ struct CompareRequest
   std::wstring directory;
   ChangeSource source{ChangeSource::Unstaged};
   std::wstring base, target;
+  bool fullFile{};
 };
 struct Commit
 {

@@ -20,6 +20,9 @@ try
   check(f.hunks[0].lines[1].oldLine == 2, "old number");
   check(f.hunks[0].lines[2].newLine == 2, "new number");
   auto u = buildPresentation(f, false), s = buildPresentation(f, true);
+  auto unifiedBlocks = findChangeBlocks(f, u), sideBlocks = findChangeBlocks(f, s);
+  check(unifiedBlocks.size() == 1 && unifiedBlocks[0].last - unifiedBlocks[0].first == 2, "unified change block");
+  check(sideBlocks.size() == 1 && sideBlocks[0].last - sideBlocks[0].first == 1, "side-by-side change block");
   check(u.size() == 7 && s.size() == 6, "alignment");
   check(s[2].left == 1 && s[2].right == 2, "replacement");
   check(s[3].left == noLine && s[3].right == 3, "filler");
@@ -58,7 +61,9 @@ try
   check(oct.files[0].newPath == L"а", "octal");
   auto h = p.parse("diff --git a/a b/a\n@@ -1 +1 @@\n-a\n+b\n@@ -20 +30 @@\n-c\n+d\n");
   check(h.files[0].hunks[1].lines[1].newLine == 30, "hunks");
-  check(buildPresentation(h.files[0], false).size() == 7, "divider");
+  auto separated = buildPresentation(h.files[0], false);
+  check(separated.size() == 7, "divider");
+  check(findChangeBlocks(h.files[0], separated).size() == 2, "separated change blocks");
   check(p.parse("diff --git a/a b/a\nold mode 100644\nnew mode 100755\n").files[0].metadata.size() == 2, "mode");
   check(p.parse("diff --git a/a b/b\ncopy from a\ncopy to b\n").files[0].status == FileStatus::Copied, "copy");
   check(!p.parse("diff --git a/a b/a\n@@ -1,2 +1,2 @@\n a\n").warnings.empty(), "truncated");

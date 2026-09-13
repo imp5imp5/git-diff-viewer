@@ -37,8 +37,9 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
     return trim(run({L"rev-parse", L"--verify", L"--end-of-options", ref + L"^{commit}"}).out);
   };
   std::vector<std::wstring> args = {L"diff", L"--no-color", L"--no-ext-diff", L"--no-textconv", L"--no-relative", L"--src-prefix=a/",
-    L"--dst-prefix=b/", L"--find-renames", L"--submodule=short", L"--ignore-submodules=none", L"--unified=3",
-    L"--output-indicator-new=+", L"--output-indicator-old=-", L"--output-indicator-context= "};
+    L"--dst-prefix=b/", L"--find-renames", L"--submodule=short", L"--ignore-submodules=none",
+    request.fullFile ? L"--unified=1000000" : L"--unified=3", L"--output-indicator-new=+", L"--output-indicator-old=-",
+    L"--output-indicator-context= "};
   switch (request.source)
   {
     case ChangeSource::Staged:

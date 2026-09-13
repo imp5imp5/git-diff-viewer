@@ -9,7 +9,12 @@ struct PresentationRow
   size_t hunk{noLine}, left{noLine}, right{noLine};
   std::wstring meta;
 };
+struct ChangeBlock
+{
+  size_t first{}, last{};
+};
 // Indices keep presentation independent of vector reallocations.
 std::vector<PresentationRow> buildPresentation(const FileDiff &file, bool sideBySide);
+std::vector<ChangeBlock> findChangeBlocks(const FileDiff &file, const std::vector<PresentationRow> &rows);
 size_t correspondingRow(const std::vector<PresentationRow> &from, size_t row, const std::vector<PresentationRow> &to);
 } // namespace gdv

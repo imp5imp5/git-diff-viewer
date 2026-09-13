@@ -16,7 +16,8 @@ Git @('config','user.email','fixture@example.invalid')
 Git @('config','commit.gpgsign','false')
 Git @('config','core.hooksPath','.no-hooks')
 Git @('config','core.autocrlf','false')
-Write-Fixture 'app.cpp' "int main() {`n    return 1;`n}`n"
+$appLines = 1..100 | ForEach-Object { 'int value{0} = {0};' -f $_ }
+Write-Fixture 'app.cpp' (($appLines -join "`n") + "`n")
 Write-Fixture 'notes.txt' "A tracked working-tree file.`n"
 Write-Fixture 'old name.txt' "This file will be renamed.`n"
 Write-Fixture 'deleted.txt' "This file will be deleted.`n"
@@ -31,7 +32,10 @@ Git @('add','.')
 Git @('commit','-m','Add second feature')
 Git @('branch','--set-upstream-to=main')
 Git @('branch','no-upstream')
-Write-Fixture 'app.cpp' "int main() {`n    // Ready for review`n    return 0;`n}`n"
+$appLines[29] = 'int value30 = 0; // Ready for review'
+$appLines[49] = 'int value50 = 0; // Ready for review'
+$appLines[69] = 'int value70 = 0; // Ready for review'
+Write-Fixture 'app.cpp' (($appLines -join "`n") + "`n")
 Write-Fixture 'Юникод файл.txt' "Привет, мир!`nUnicode paths and content.`n"
 Write-Fixture 'empty.txt' ''
 [IO.File]::WriteAllBytes((Join-Path $fixtureRoot 'binary.dat'),[byte[]](0,1,2,255))

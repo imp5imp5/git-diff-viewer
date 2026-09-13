@@ -57,12 +57,16 @@ std::string MainWindow::stateJson() const
   std::string out = "{\"loading\":" + std::string(loading_ ? "true" : "false") + ",\"repository\":" + json(directory_) +
                     ",\"branch\":" + json(snapshot_.branch) + ",\"previewCommit\":" + std::to_string(previewIndex_) +
                     ",\"source\":" + std::to_string(SendMessageW(source_, CB_GETCURSEL, 0, 0)) +
-                    ",\"view\":" + json(side_ ? L"side-by-side" : L"unified") +
+                    ",\"view\":" + json(side_ ? L"side-by-side" : L"unified") + ",\"fullFile\":" + (fullFile_ ? "true" : "false") +
                     ",\"plainText\":" + (diff_.plainText() ? "true" : "false") + ",\"darkTheme\":" + (darkTheme ? "true" : "false") +
                     ",\"selectedFile\":" + json(selectedPath_) + ",\"topRow\":" + std::to_string(diff_.topRow()) +
-                    ",\"rowCount\":" + std::to_string(diff_.rowCount()) + ",\"fontSize\":" + std::to_string(diff_.fontSize()) +
-                    ",\"status\":" + json(label(status_)) + ",\"width\":" + std::to_string(r.right) +
-                    ",\"height\":" + std::to_string(r.bottom) + ",\"files\":[";
+                    ",\"rowCount\":" + std::to_string(diff_.rowCount()) +
+                    ",\"visibleRowCount\":" + std::to_string(diff_.visibleRowCount()) +
+                    ",\"activeChangeStart\":" + std::to_string(diff_.activeChangeStart()) +
+                    ",\"activeChangeEnd\":" + std::to_string(diff_.activeChangeEnd()) +
+                    ",\"changeFlashing\":" + (diff_.changeFlashing() ? "true" : "false") +
+                    ",\"fontSize\":" + std::to_string(diff_.fontSize()) + ",\"status\":" + json(label(status_)) +
+                    ",\"width\":" + std::to_string(r.right) + ",\"height\":" + std::to_string(r.bottom) + ",\"files\":[";
   bool first = true;
   if (!snapshot_.commitId.empty())
   {
@@ -88,8 +92,8 @@ std::string MainWindow::stateJson() const
   out += "],\"controls\":[";
   first = true;
   const std::pair<const wchar_t *, HWND> controls[] = {{L"refresh", refresh_}, {L"source", source_}, {L"view", view_},
-    {L"theme", themeButton_}, {L"info", info_}, {L"base", base_}, {L"target", target_}, {L"compare", compare_}, {L"files", files_},
-    {L"commits", commits_}, {L"diff", diff_.handle()}, {L"status", status_}};
+    {L"full-file", fullFileButton_}, {L"theme", themeButton_}, {L"info", info_}, {L"base", base_}, {L"target", target_},
+    {L"compare", compare_}, {L"files", files_}, {L"commits", commits_}, {L"diff", diff_.handle()}, {L"status", status_}};
   for (const auto &c : controls)
   {
     RECT bounds{};
@@ -210,6 +214,14 @@ void MainWindow::automationTick()
       if (side_ != (value == L"side-by-side"))
         toggle();
     }
+    else if (command == L"full-file")
+    {
+      auto value = arg(0);
+      if (value != L"on" && value != L"off")
+        throw std::runtime_error("Full-file mode must be on or off.");
+      if (fullFile_ != (value == L"on"))
+        SendMessageW(fullFileButton_, BM_CLICK, 0, 0);
+    }
     else if (command == L"base" || command == L"target")
       SetWindowTextW(command == L"base" ? base_ : target_, arg(0).c_str());
     else if (command == L"refresh" || command == L"compare")
@@ -254,6 +266,13 @@ void MainWindow::automationTick()
     }
     else if (command == L"scroll")
       diff_.scroll(integer(arg(0), 0, std::max(0, diff_.rowCount() - 1)));
+    else if (command == L"navigate-change")
+    {
+      auto value = arg(0);
+      if (value != L"previous" && value != L"next")
+        throw std::runtime_error("Change navigation must be previous or next.");
+      diff_.navigateChange(value == L"previous" ? -1 : 1);
+    }
     else if (command == L"zoom")
       diff_.zoom(integer(arg(0), -40, 40));
     else if (command == L"ctrl-wheel")

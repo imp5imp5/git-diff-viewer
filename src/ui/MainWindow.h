@@ -3,6 +3,7 @@
 #include "app/RepositoryController.h"
 #include <commctrl.h>
 #include <memory>
+#include <unordered_set>
 namespace gdv
 {
 class MainWindow
@@ -26,6 +27,7 @@ private:
   std::vector<std::pair<size_t, size_t>> fileChanges_;
   void sourceChanged();
   void toggle();
+  void toggleFullFile();
   void previewCommit(int index);
   void endPreview();
   void drawListItem(const DRAWITEMSTRUCT &item);
@@ -38,7 +40,7 @@ private:
   void applyTheme();
   std::wstring filePathAt(int index) const;
   static LRESULT CALLBACK filesProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
-  HWND tooltip_{}, themeButton_{};
+  HWND tooltip_{}, themeButton_{}, fullFileButton_{};
   std::wstring tooltipText_, savedCommit_, infoTooltipText_;
   int tooltipIndex_{-1};
   HBRUSH backgroundBrush_{}, fieldBrush_{};
@@ -53,6 +55,7 @@ private:
   UINT dpi_{96};
   std::wstring directory_, selectedPath_;
   std::wstring automationDirectory_;
+  std::unordered_set<std::wstring> visitedFullFiles_;
   std::string pendingResponse_;
   bool pendingClose_{};
   RepositorySnapshot snapshot_;
@@ -69,6 +72,6 @@ private:
   std::vector<Commit> series_;
   std::unique_ptr<RepositoryController> controller_;
   DiffView diff_;
-  bool side_{}, loading_{}, initialLoad_{true};
+  bool side_{}, fullFile_{}, loading_{}, initialLoad_{true};
 };
 } // namespace gdv

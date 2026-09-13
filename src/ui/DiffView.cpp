@@ -7,11 +7,25 @@ namespace gdv
 {
 namespace
 {
+constexpr UINT_PTR autoScrollTimer = 2;
+constexpr UINT_PTR changeFlashTimer = 3;
 void fill(HDC dc, RECT r, ThemeColor color)
 {
   HBRUSH b = CreateSolidBrush(themeColor(color));
   FillRect(dc, &r, b);
   DeleteObject(b);
+}
+void fillColor(HDC dc, RECT r, COLORREF color)
+{
+  HBRUSH b = CreateSolidBrush(color);
+  FillRect(dc, &r, b);
+  DeleteObject(b);
+}
+COLORREF flashColor(COLORREF color)
+{
+  int target = darkTheme ? 255 : 0;
+  auto channel = [&](int value) { return (value * 4 + target) / 5; };
+  return RGB(channel(GetRValue(color)), channel(GetGValue(color)), channel(GetBValue(color)));
 }
 void text(HDC dc, RECT r, const std::wstring &value, ThemeColor color, UINT flags = DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX)
 {
@@ -66,15 +80,20 @@ void DiffView::setDpi(UINT dpi)
 void DiffView::setFile(const FileDiff *file, bool preserve, bool plainText)
 {
   stopAutoScroll();
+  stopChangeFlash();
   plain_ = plainText;
   headerHeight_ = plain_ ? 0 : std::max(MulDiv(62, static_cast<int>(dpi_), 96), rowHeight_ * 2);
   file_ = file;
   rows_ = file ? buildPresentation(*file, side_) : std::vector<PresentationRow>{};
+  changeBlocks_ = file ? findChangeBlocks(*file, rows_) : std::vector<ChangeBlock>{};
   if (!preserve)
   {
     top_ = horizontal_ = 0;
     selected_ = anchor_ = -1;
+    activeChange_ = -1;
   }
+  else if (activeChange_ >= static_cast<int>(changeBlocks_.size()))
+    activeChange_ = -1;
   maxWidth_ = 0;
   numberDigits_ = 7;
   if (file)
@@ -120,6 +139,9 @@ void DiffView::setSideBySide(bool enabled)
   if (anchor_ >= 0)
     anchor_ = static_cast<int>(correspondingRow(rows_, static_cast<size_t>(anchor_), rows));
   rows_ = std::move(rows);
+  changeBlocks_ = file_ ? findChangeBlocks(*file_, rows_) : std::vector<ChangeBlock>{};
+  activeChange_ = -1;
+  stopChangeFlash();
   updateScroll();
   InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -149,9 +171,82 @@ void DiffView::updateScroll()
 }
 void DiffView::scrollTo(int row)
 {
+  activeChange_ = -1;
   top_ = row;
   updateScroll();
   InvalidateRect(hwnd_, nullptr, FALSE);
+}
+void DiffView::stopChangeFlash()
+{
+  if (hwnd_)
+    KillTimer(hwnd_, changeFlashTimer);
+  flashFirst_ = flashLast_ = -1;
+}
+int DiffView::activeChangeStart() const
+{
+  return activeChange_ >= 0 && activeChange_ < static_cast<int>(changeBlocks_.size())
+           ? static_cast<int>(changeBlocks_[static_cast<size_t>(activeChange_)].first)
+           : -1;
+}
+int DiffView::activeChangeEnd() const
+{
+  return activeChange_ >= 0 && activeChange_ < static_cast<int>(changeBlocks_.size())
+           ? static_cast<int>(changeBlocks_[static_cast<size_t>(activeChange_)].last)
+           : -1;
+}
+void DiffView::showChangeBlock(size_t index, bool flash)
+{
+  if (index >= changeBlocks_.size())
+    return;
+  const auto &block = changeBlocks_[index];
+  int first = static_cast<int>(block.first), last = static_cast<int>(block.last);
+  int page = pageRows(), height = last - first + 1;
+  top_ = height >= page ? first : first - (page - height) / 2;
+  updateScroll();
+  activeChange_ = static_cast<int>(index);
+  stopChangeFlash();
+  if (flash)
+  {
+    flashFirst_ = first;
+    flashLast_ = last;
+    SetTimer(hwnd_, changeFlashTimer, 100, nullptr);
+  }
+  InvalidateRect(hwnd_, nullptr, FALSE);
+}
+void DiffView::navigateChange(int direction)
+{
+  if (changeBlocks_.empty() || !direction)
+    return;
+  int target = activeChange_;
+  if (target >= 0)
+    target = std::clamp(target + (direction < 0 ? -1 : 1), 0, static_cast<int>(changeBlocks_.size()) - 1);
+  else if (direction > 0)
+  {
+    target = 0;
+    for (size_t i = 0; i < changeBlocks_.size(); ++i)
+      if (static_cast<int>(changeBlocks_[i].last) >= top_)
+      {
+        target = static_cast<int>(i);
+        break;
+      }
+  }
+  else
+  {
+    target = 0;
+    for (size_t i = changeBlocks_.size(); i-- > 0;)
+      if (static_cast<int>(changeBlocks_[i].first) <= top_)
+      {
+        target = static_cast<int>(i);
+        break;
+      }
+  }
+  if (target != activeChange_)
+    showChangeBlock(static_cast<size_t>(target), true);
+}
+void DiffView::showFirstChange()
+{
+  if (!changeBlocks_.empty())
+    showChangeBlock(0, false);
 }
 const DiffLine *DiffView::line(const PresentationRow &row, size_t index) const
 {
@@ -202,8 +297,9 @@ void DiffView::paint(HDC printDC)
     RECT empty{pad * 2, headerHeight_ + pad * 2, area.right - pad * 2, area.bottom - pad};
     text(dc, empty, message_, ThemeColor::MutedText, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
   }
-  auto drawCell = [&](RECT r, const DiffLine *l, bool oldSide, bool unified, bool selected) {
-    fill(dc, r, selected ? ThemeColor::Selection : background(l));
+  auto drawCell = [&](RECT r, const DiffLine *l, bool oldSide, bool unified, bool selected, bool flashing) {
+    auto color = themeColor(selected ? ThemeColor::Selection : background(l));
+    fillColor(dc, r, flashing ? flashColor(color) : color);
     if (!l)
       return;
     int gutter = (unified ? numberDigits_ * 2 + 3 : numberDigits_ + 2) * charWidth_;
@@ -255,9 +351,11 @@ void DiffView::paint(HDC printDC)
     const auto &row = rows_[index];
     RECT r{0, headerHeight_ + n * rowHeight_, area.right, headerHeight_ + (n + 1) * rowHeight_};
     bool selected = anchor_ >= 0 && selected_ >= 0 && index >= std::min(anchor_, selected_) && index <= std::max(anchor_, selected_);
+    bool flashing = index >= flashFirst_ && index <= flashLast_;
     if (!row.meta.empty())
     {
-      fill(dc, r, selected ? ThemeColor::Selection : plain_ ? ThemeColor::Surface : ThemeColor::Metadata);
+      auto color = themeColor(selected ? ThemeColor::Selection : plain_ ? ThemeColor::Surface : ThemeColor::Metadata);
+      fillColor(dc, r, flashing ? flashColor(color) : color);
       r.left += pad - horizontal_;
       text(dc, r, row.meta, plain_ ? ThemeColor::Text : ThemeColor::MetadataText);
     }
@@ -265,13 +363,13 @@ void DiffView::paint(HDC printDC)
     {
       auto left = r;
       left.right = half;
-      drawCell(left, line(row, row.left), true, false, selected);
+      drawCell(left, line(row, row.left), true, false, selected, flashing);
       auto right = r;
       right.left = half;
-      drawCell(right, line(row, row.right), false, false, selected);
+      drawCell(right, line(row, row.right), false, false, selected, flashing);
     }
     else
-      drawCell(r, line(row, row.left != noLine ? row.left : row.right), false, true, selected);
+      drawCell(r, line(row, row.left != noLine ? row.left : row.right), false, true, selected, flashing);
   }
   if (side_ && !plain_)
     fill(dc, {half, headerHeight_ / 2, half + 1, area.bottom}, ThemeColor::Border);
@@ -359,7 +457,7 @@ void DiffView::stopAutoScroll()
   if (!autoScroll_)
     return;
   autoScroll_ = false;
-  KillTimer(hwnd_, 2);
+  KillTimer(hwnd_, autoScrollTimer);
   if (GetCapture() == hwnd_)
     ReleaseCapture();
   SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
@@ -420,12 +518,18 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
       autoScroll_ = true;
       SetCapture(hwnd_);
       SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
-      SetTimer(hwnd_, 2, 16, nullptr);
+      SetTimer(hwnd_, autoScrollTimer, 16, nullptr);
       InvalidateRect(hwnd_, nullptr, FALSE);
       return 0;
     case WM_MBUTTONUP: return 0;
     case WM_TIMER:
-      if (w == 2 && autoScroll_)
+      if (w == changeFlashTimer && changeFlashing())
+      {
+        stopChangeFlash();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+      }
+      if (w == autoScrollTimer && autoScroll_)
       {
         POINT cursor{};
         GetCursorPos(&cursor);

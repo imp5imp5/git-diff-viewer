@@ -50,6 +50,29 @@ std::vector<PresentationRow> buildPresentation(const FileDiff &file, bool side)
   }
   return rows;
 }
+std::vector<ChangeBlock> findChangeBlocks(const FileDiff &file, const std::vector<PresentationRow> &rows)
+{
+  auto changed = [&](const PresentationRow &row) {
+    if (row.hunk == noLine || row.hunk >= file.hunks.size())
+      return false;
+    const auto &lines = file.hunks[row.hunk].lines;
+    for (auto index : {row.left, row.right})
+      if (index != noLine && index < lines.size() &&
+          (lines[index].type == DiffLineType::Added || lines[index].type == DiffLineType::Removed))
+        return true;
+    return false;
+  };
+  std::vector<ChangeBlock> blocks;
+  for (size_t i = 0; i < rows.size(); ++i)
+    if (changed(rows[i]))
+    {
+      if (blocks.empty() || blocks.back().last + 1 != i)
+        blocks.push_back({i, i});
+      else
+        blocks.back().last = i;
+    }
+  return blocks;
+}
 size_t correspondingRow(const std::vector<PresentationRow> &from, size_t row, const std::vector<PresentationRow> &to)
 {
   if (from.empty() || to.empty())

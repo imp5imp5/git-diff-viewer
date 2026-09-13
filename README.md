@@ -112,12 +112,16 @@ When viewing an individual commit, the first file-list entry is **`<<Commit Mess
 
 Use **Refresh** to reload repository changes. Refresh is manual.
 
+Use **Full file** or press `F` to show every line of each changed text file instead of only the changed hunks and their surrounding context. Toggle it again to return to the compact diff.
+
 ### Keyboard and mouse controls
 
 | Input | Action |
 | --- | --- |
 | `F5` or `Ctrl+R` | Refresh Git data. |
 | `Ctrl+Shift+D` | Toggle unified / side-by-side layout. |
+| `F` while not editing a ref or using a dropdown | Toggle full-file context. |
+| `Ctrl+Page Up` / `Ctrl+Page Down` | Go to the previous / next changed block. |
 | `Ctrl+Down` / `Ctrl+Up` | Select the next / previous changed file. |
 | `Space` with the file list, diff, or closed commit dropdown focused | Toggle the current commit message, restoring the previous file and scroll position on return. |
 | Middle click in the diff, then move up/down | Enable autoscroll. Distance from the click point controls speed. Click again or press Escape to stop. |

@@ -145,6 +145,26 @@ try
   check(blank.document.warnings.empty() && blank.document.files.size() == 1 && blank.document.files[0].hunks[0].lines.size() == 4 &&
           blank.document.files[0].hunks[0].lines[1].text.empty(),
     "empty context lines survive custom Git configuration");
+  std::string fullContents;
+  for (int i = 1; i <= 20; ++i)
+    fullContents += "line " + std::to_string(i) + "\n";
+  write(L"unstaged.txt", fullContents);
+  run({L"add", L"unstaged.txt"});
+  auto changedContents = fullContents;
+  changedContents.replace(changedContents.find("line 2\n"), 7, "changed 2\n");
+  changedContents.replace(changedContents.find("line 11\n"), 8, "changed\n");
+  changedContents.replace(changedContents.find("line 19\n"), 8, "changed 19\n");
+  write(L"unstaged.txt", changedContents);
+  CompareRequest contextRequest{dir.wstring(), ChangeSource::Unstaged, {}, {}};
+  auto compactContext = repo.load(contextRequest, cancel);
+  contextRequest.fullFile = true;
+  auto fullContext = repo.load(contextRequest, cancel);
+  const auto &compactLines = compactContext.document.files[0].hunks[0].lines;
+  const auto &fullLines = fullContext.document.files[0].hunks[0].lines;
+  check(fullContext.document.warnings.empty() && fullContext.document.files[0].hunks.size() == 1 &&
+          fullLines.size() > compactLines.size() && fullLines.front().oldLine.value_or(0) == 1 &&
+          fullLines.back().oldLine.value_or(0) == 20,
+    "full-file mode merges distant changes and includes the first through the last line");
   {
     RepositoryController controller(nullptr);
     for (int i = 0; i < 30; ++i)
