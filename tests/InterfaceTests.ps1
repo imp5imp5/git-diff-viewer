@@ -7,6 +7,18 @@ New-Item -ItemType Directory -Path $root -Force | Out-Null
 $client = Join-Path $project 'tools/app_command.ps1'
 function Invoke-App([string]$Verb,[string[]]$Values=@()) { & $client -Directory $root -Command $Verb -Arguments $Values }
 function Check($Condition,[string]$Message) {if(-not $Condition) {throw $Message}}
+function Read-SharedJson([string]$Path) {
+    try {
+        $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        try {
+            $reader=[IO.StreamReader]::new($stream,[Text.Encoding]::UTF8)
+            try {return $reader.ReadToEnd() | ConvertFrom-Json} finally {$reader.Dispose()}
+        } finally {$stream.Dispose()}
+    } catch {
+        if(-not ($_.Exception.GetBaseException() -is [IO.IOException])) {throw}
+        return $null
+    }
+}
 function Wait-Idle {
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
     do {
@@ -46,8 +58,8 @@ try {
     $retryDeadline = [DateTime]::UtcNow.AddSeconds(5)
     do {
         Start-Sleep -Milliseconds 100
-        $reply = [IO.File]::ReadAllText((Join-Path $root 'response.json')) | ConvertFrom-Json
-    } while($reply.id -ne $retryId -and [DateTime]::UtcNow -lt $retryDeadline)
+        $reply = Read-SharedJson (Join-Path $root 'response.json')
+    } while(($null -eq $reply -or $reply.id -ne $retryId) -and [DateTime]::UtcNow -lt $retryDeadline)
     Check ($reply.id -eq $retryId -and $reply.ok -and $reply.state.fontSize -eq 12) 'Response retry does not repeat the command'
     Invoke-App 'zoom' @('-1') | Out-Null
     Invoke-App 'source' @('staged') | Out-Null
@@ -141,19 +153,32 @@ try {
     Check ($state.files.Count -eq 1 -and $state.files[0].path -eq 'notes.txt') 'Unstaged source'
     Invoke-App 'source' @('ready') | Out-Null
     $state=Wait-Idle
-    Check ($state.commits.Count -eq 2 -and $state.files.Count -eq 2) 'Ready to push'
+    Check ($state.commits.Count -eq 2 -and $state.files.Count -eq 2 -and $state.fileList.Count -eq 8) 'Ready to push groups files by commit'
+    Check ($state.fileList[0].kind -eq 'commit' -and $state.fileList[0].label.EndsWith('Add first feature') -and
+           $state.fileList[1].kind -eq 'file' -and $state.fileList[1].path -eq 'first.txt' -and
+           $state.fileList[2].kind -eq 'commit' -and $state.fileList[2].label.EndsWith('Add second feature') -and
+           $state.fileList[3].kind -eq 'file' -and $state.fileList[3].path -eq 'second.txt' -and
+           $state.fileList[4].kind -eq 'spacer' -and $state.fileList[5].kind -eq 'summary') 'Ready to push list order'
+    $commitControl=$state.controls | Where-Object {$_.id -eq 'commits'}
+    Check (-not $commitControl.visible) 'Ready to push uses the changed-files list instead of the commit dropdown'
+    $readyMessage=Invoke-App 'select-list-item' @('2')
+    Check ($readyMessage.plainText -and @($readyMessage.visibleRows | Where-Object {$_.meta -eq 'Add second feature'}).Count -eq 1) 'Ready commit heading opens its message'
+    Check ($readyMessage.status -like '1 files changed*+1*') 'Ready commit heading shows its statistics'
+    $readyFile=Invoke-App 'select-list-item' @('3')
+    Check ($readyFile.selectedFile -eq 'second.txt' -and -not $readyFile.plainText) 'Ready commit file opens its commit diff'
+    Check ($readyFile.status -like '1 files changed*+1*') 'Ready commit file keeps its commit statistics'
+    $readySummaryHeading=Invoke-App 'select-list-item' @('5')
+    Check (@($readySummaryHeading.visibleRows | Where-Object {$_.meta -match '^[0-9a-f]{8}  Add first feature$'}).Count -eq 1 -and
+           @($readySummaryHeading.visibleRows | Where-Object {$_.meta -match '^[0-9a-f]{8}  Add second feature$'}).Count -eq 1) 'Ready summary lists commit hashes and subjects'
+    $readySummary=Invoke-App 'select-file' @('second.txt')
+    Check ($readySummary.selectedListKey -eq "summary`nsecond.txt" -and $readySummary.status -like '2 files changed*+2*') 'Ready summary file uses the combined diff and statistics'
     Capture 'ready.png'
-    $previous=$state
-    $hover=Invoke-App 'hover-commit' @('1')
-    Check ($hover.previewCommit -eq 1 -and -not $hover.loading -and $hover.selectedFile -eq $previous.selectedFile) 'Hover previews without loading or changing file selection'
-    Check (@($hover.visibleRows | Where-Object {$_.meta -eq 'Add second feature'}).Count -eq 1) 'Hover shows full commit message'
-    Capture 'hover-message.png'
-    if ($env:GFD_SKIP_SCREENSHOTS -ne '1') {Invoke-App 'screenshot-commits' @('commit-dropdown.png') | Out-Null}
-    $hover=Invoke-App 'hover-commit' @('2')
-    Check (@($hover.visibleRows | Where-Object {$_.meta -eq 'Add first feature'}).Count -eq 1) 'Moving between commits changes preview'
-    $restored=Invoke-App 'end-hover'
-    Check ($restored.previewCommit -eq -1 -and $restored.selectedFile -eq $previous.selectedFile -and $restored.topRow -eq $previous.topRow) 'Closing dropdown restores original diff'
-    Invoke-App 'select-commit' @('1') | Out-Null
+    Invoke-App 'base' @('HEAD~1') | Out-Null
+    Invoke-App 'compare' | Out-Null
+    $state=Wait-Idle
+    Check ($state.fileList.Count -eq 2 -and $state.fileList[0].kind -eq 'commit' -and
+           $state.fileList[1].kind -eq 'file' -and $state.fileList[1].path -eq 'second.txt') 'One ready commit omits the redundant summary'
+    Invoke-App 'source' @('commit') | Out-Null
     $state=Wait-Idle
     Check ($state.files.Count -eq 2 -and $state.files[0].path -eq '<<Commit Message>>') 'Commit message is first list entry'
     Invoke-App 'select-file' @('<<Commit Message>>') | Out-Null
@@ -176,10 +201,54 @@ try {
     $returned=Invoke-App 'toggle-message'
     Check (-not $returned.plainText -and $returned.selectedFile -eq 'second.txt' -and $returned.topRow -eq $state.topRow) 'Message toggle restores file and scroll'
     $first=Invoke-App 'navigate-file' @('-1')
-    Check ($first.selectedFile -eq 'second.txt') 'File navigation skips message entry at first file'
+    Check ($first.selectedFile -eq '<<Commit Message>>' -and $first.plainText) 'List navigation includes the commit message entry'
     Invoke-App 'source' @('commit') | Out-Null
     $state=Wait-Idle
     Check ($state.files[0].path -eq '<<Commit Message>>') 'Single commit mode also includes message'
+    Invoke-App 'base' @('main') | Out-Null
+    Invoke-App 'target' @('HEAD') | Out-Null
+    Invoke-App 'source' @('range') | Out-Null
+    $state=Wait-Idle
+    Check ($state.files.Count -eq 2 -and $state.fileList.Count -eq 8) 'Commit range includes grouped and summary files'
+    Check ($state.fileList[0].kind -eq 'commit' -and $state.fileList[0].label.EndsWith('Add first feature') -and
+           $state.fileList[1].kind -eq 'file' -and $state.fileList[1].path -eq 'first.txt' -and
+           $state.fileList[2].kind -eq 'commit' -and $state.fileList[2].label.EndsWith('Add second feature') -and
+           $state.fileList[3].kind -eq 'file' -and $state.fileList[3].path -eq 'second.txt' -and
+           $state.fileList[4].kind -eq 'spacer' -and $state.fileList[5].kind -eq 'summary') 'Commit range list order'
+    $message=Invoke-App 'select-list-item' @('0')
+    Check ($message.plainText -and @($message.visibleRows | Where-Object {$_.meta -eq 'Add first feature'}).Count -eq 1) 'Range commit heading opens its message'
+    Check ($message.status -like '1 files changed*+1*') 'Commit heading shows statistics for that commit'
+    $commitFile=Invoke-App 'select-list-item' @('1')
+    Check (-not $commitFile.plainText -and $commitFile.selectedListKey.StartsWith("commit`n") -and $commitFile.selectedFile -eq 'first.txt') 'Range commit file opens its commit diff'
+    Check ($commitFile.status -like '1 files changed*+1*') 'Commit file keeps statistics for its commit'
+    $summaryFile=Invoke-App 'select-file' @('second.txt')
+    Check ($summaryFile.selectedListKey -eq "summary`nsecond.txt") 'File selection prefers the combined range summary'
+    Check ($summaryFile.status -like '2 files changed*+2*') 'Summary file shows statistics for the complete range'
+    $summaryFirst=Invoke-App 'navigate-file' @('-1')
+    Check ($summaryFirst.selectedListKey -eq "summary`nfirst.txt") 'Ctrl list navigation selects summary files'
+    $summary=Invoke-App 'navigate-file' @('-1')
+    Check ($summary.selectedListKey -eq 'summary' -and $summary.selectedFile -eq '<<Summary>>') 'Ctrl list navigation selects the summary heading'
+    Check ($summary.status -like '2 files changed*+2*') 'Summary heading shows statistics for the complete range'
+    Check (@($summary.visibleRows | Where-Object {$_.meta -match '^[0-9a-f]{8}  Add first feature$'}).Count -eq 1 -and
+           @($summary.visibleRows | Where-Object {$_.meta -match '^[0-9a-f]{8}  Add second feature$'}).Count -eq 1) 'Range summary lists commit hashes and subjects'
+    $commitFile=Invoke-App 'navigate-file' @('-1')
+    Check ($commitFile.selectedListKey.StartsWith("commit`n") -and $commitFile.selectedFile -eq 'second.txt') 'Ctrl list navigation skips the empty row'
+    $commitHeading=Invoke-App 'navigate-file' @('-1')
+    Check ($commitHeading.selectedFile -eq '<<Commit Message>>' -and $commitHeading.plainText) 'Ctrl list navigation selects commit headings'
+    Invoke-App 'select-list-item' @('3') | Out-Null
+    $summary=Invoke-App 'list-key' @('down')
+    Check ($summary.selectedListKey -eq 'summary') 'Down skips the empty row and selects the summary heading'
+    $commitFile=Invoke-App 'list-key' @('up')
+    Check ($commitFile.selectedFile -eq 'second.txt' -and $commitFile.selectedListKey.StartsWith("commit`n")) 'Up skips the empty row'
+    $commitHeading=Invoke-App 'list-key' @('up')
+    Check ($commitHeading.selectedFile -eq '<<Commit Message>>' -and $commitHeading.plainText) 'Up selects commit headings'
+    Capture 'commit-range.png'
+    Invoke-App 'base' @('HEAD~1') | Out-Null
+    Invoke-App 'compare' | Out-Null
+    $state=Wait-Idle
+    Check ($state.fileList.Count -eq 2 -and
+           $state.fileList[0].kind -eq 'commit' -and $state.fileList[0].label.EndsWith('Add second feature') -and
+           $state.fileList[1].kind -eq 'file' -and $state.fileList[1].path -eq 'second.txt') 'Single-commit range omits the redundant summary'
     Invoke-App 'open' @((Join-Path $root 'nonexistent')) | Out-Null
     $state=Wait-Idle
     Check ($state.status -like 'Git failed*' -and $state.files.Count -eq 0) 'Invalid repository error'

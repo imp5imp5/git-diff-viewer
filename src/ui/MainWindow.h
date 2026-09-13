@@ -14,6 +14,22 @@ public:
   ~MainWindow();
 
 private:
+  enum class FileListItemKind
+  {
+    File,
+    CommitMessage,
+    Commit,
+    Spacer,
+    Summary
+  };
+  struct FileListItem
+  {
+    FileListItemKind kind{FileListItemKind::File};
+    const FileDiff *file{};
+    size_t commitIndex{};
+    size_t added{}, removed{};
+    std::wstring label, key;
+  };
   static LRESULT CALLBACK procedure(HWND, UINT, WPARAM, LPARAM);
   LRESULT message(UINT, WPARAM, LPARAM);
   void createControls();
@@ -22,12 +38,13 @@ private:
   void refresh(bool seriesSelection = false);
   void loaded();
   void selectFile();
+  void updateStatus();
   void rememberFileScroll();
   std::wstring fileScrollKey(const std::wstring &path) const;
-  void navigateFile(int direction);
+  void navigateList(int direction, bool focusDiff = true);
   void toggleCommitMessage();
   int messageReturnIndex_{-1}, messageReturnTop_{};
-  std::vector<std::pair<size_t, size_t>> fileChanges_;
+  std::vector<FileListItem> fileListItems_;
   void sourceChanged();
   void toggle();
   void toggleFullFile();
@@ -56,7 +73,9 @@ private:
   HINSTANCE instance_{};
   HFONT font_{};
   UINT dpi_{96};
-  std::wstring directory_, selectedPath_;
+  std::wstring directory_, selectedPath_, selectedListKey_;
+  std::wstring readyBase_, rangeBase_;
+  ChangeSource baseMode_{ChangeSource::Unstaged};
   std::wstring scrollContext_;
   std::wstring automationDirectory_;
   std::unordered_map<std::wstring, int> fileScrollPositions_;
@@ -64,6 +83,7 @@ private:
   bool pendingClose_{};
   RepositorySnapshot snapshot_;
   FileDiff commitMessageFile_;
+  FileDiff listMessageFile_;
   FileDiff hoverMessageFile_;
   const FileDiff *previewPreviousFile_{};
   bool previewPreviousPlain_{};

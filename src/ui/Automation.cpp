@@ -59,8 +59,8 @@ std::string MainWindow::stateJson() const
                     ",\"source\":" + std::to_string(SendMessageW(source_, CB_GETCURSEL, 0, 0)) +
                     ",\"view\":" + json(side_ ? L"side-by-side" : L"unified") + ",\"fullFile\":" + (fullFile_ ? "true" : "false") +
                     ",\"plainText\":" + (diff_.plainText() ? "true" : "false") + ",\"darkTheme\":" + (darkTheme ? "true" : "false") +
-                    ",\"selectedFile\":" + json(selectedPath_) + ",\"topRow\":" + std::to_string(diff_.topRow()) +
-                    ",\"rowCount\":" + std::to_string(diff_.rowCount()) +
+                    ",\"selectedFile\":" + json(selectedPath_) + ",\"selectedListKey\":" + json(selectedListKey_) +
+                    ",\"topRow\":" + std::to_string(diff_.topRow()) + ",\"rowCount\":" + std::to_string(diff_.rowCount()) +
                     ",\"visibleRowCount\":" + std::to_string(diff_.visibleRowCount()) +
                     ",\"activeChangeStart\":" + std::to_string(diff_.activeChangeStart()) +
                     ",\"activeChangeEnd\":" + std::to_string(diff_.activeChangeEnd()) +
@@ -82,6 +82,27 @@ std::string MainWindow::stateJson() const
       out += ',';
     first = false;
     out += "{\"path\":" + json(f.path()) + ",\"status\":" + json(std::wstring(1, statusLetter(f.status))) + "}";
+  }
+  out += "],\"fileList\":[";
+  first = true;
+  auto kind = [](FileListItemKind value) {
+    switch (value)
+    {
+      case FileListItemKind::File: return L"file";
+      case FileListItemKind::CommitMessage: return L"message";
+      case FileListItemKind::Commit: return L"commit";
+      case FileListItemKind::Spacer: return L"spacer";
+      case FileListItemKind::Summary: return L"summary";
+    }
+    return L"unknown";
+  };
+  for (const auto &item : fileListItems_)
+  {
+    if (!first)
+      out += ',';
+    first = false;
+    out += "{\"kind\":" + json(kind(item.kind)) + ",\"label\":" + json(item.label) + ",\"key\":" + json(item.key) +
+           ",\"path\":" + json(item.file ? item.file->path() : L"") + "}";
   }
   out += "],\"commits\":[";
   first = true;
@@ -180,7 +201,15 @@ void MainWindow::automationTick()
     };
     if (command == L"state") {}
     else if (command == L"navigate-file")
-      navigateFile(integer(arg(0), -1, 1));
+      navigateList(integer(arg(0), -1, 1));
+    else if (command == L"list-key")
+    {
+      auto value = arg(0);
+      if (value != L"up" && value != L"down")
+        throw std::runtime_error("List key must be up or down.");
+      SetFocus(files_);
+      SendMessageW(files_, WM_KEYDOWN, value == L"up" ? VK_UP : VK_DOWN, 0);
+    }
     else if (command == L"toggle-message")
       toggleCommitMessage();
     else if (command == L"theme")
@@ -226,20 +255,50 @@ void MainWindow::automationTick()
         SendMessageW(fullFileButton_, BM_CLICK, 0, 0);
     }
     else if (command == L"base" || command == L"target")
+    {
       SetWindowTextW(command == L"base" ? base_ : target_, arg(0).c_str());
+      if (command == L"base")
+      {
+        if (static_cast<ChangeSource>(SendMessageW(source_, CB_GETCURSEL, 0, 0)) == ChangeSource::ReadyToPush)
+          readyBase_ = arg(0);
+        else
+          rangeBase_ = arg(0);
+      }
+    }
     else if (command == L"refresh" || command == L"compare")
       refresh();
     else if (command == L"select-file")
     {
       if (loading_)
         throw std::runtime_error("Wait until loading is false before selecting a file.");
-      auto found = std::find_if(snapshot_.document.files.begin(), snapshot_.document.files.end(),
-        [&](const FileDiff &f) { return f.path() == arg(0); });
-      bool isMessage = !snapshot_.commitId.empty() && arg(0) == L"<<Commit Message>>";
-      if (found == snapshot_.document.files.end() && !isMessage)
+      int found = -1;
+      for (size_t i = 0; i < fileListItems_.size(); ++i)
+      {
+        const auto &item = fileListItems_[i];
+        if (arg(0) == L"<<Commit Message>>" && item.kind == FileListItemKind::CommitMessage)
+          found = static_cast<int>(i);
+        if (item.file && item.file->path() == arg(0))
+        {
+          if (found < 0)
+            found = static_cast<int>(i);
+          if (item.key.rfind(L"summary\n", 0) == 0)
+          {
+            found = static_cast<int>(i);
+            break;
+          }
+        }
+      }
+      if (found < 0)
         throw std::runtime_error("File is not in the current comparison.");
-      SendMessageW(files_, LB_SETCURSEL,
-        isMessage ? 0 : found - snapshot_.document.files.begin() + (!snapshot_.commitId.empty() ? 1 : 0), 0);
+      SendMessageW(files_, LB_SETCURSEL, found, 0);
+      selectFile();
+    }
+    else if (command == L"select-list-item")
+    {
+      if (loading_)
+        throw std::runtime_error("Wait until loading is false before selecting a list item.");
+      int index = integer(arg(0), 0, static_cast<int>(fileListItems_.size()) - 1);
+      SendMessageW(files_, LB_SETCURSEL, index, 0);
       selectFile();
     }
     else if (command == L"hover-commit")

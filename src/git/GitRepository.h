@@ -29,6 +29,7 @@ struct RepositorySnapshot
   std::wstring commitId, commitMessage;
   DiffDocument document;
   std::vector<Commit> commits;
+  std::vector<DiffDocument> commitDocuments;
 };
 class GitRepository
 {

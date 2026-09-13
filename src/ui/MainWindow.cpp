@@ -45,6 +45,17 @@ std::wstring getText(HWND h)
   return s;
 }
 ChangeSource source(HWND h) { return static_cast<ChangeSource>(SendMessageW(h, CB_GETCURSEL, 0, 0)); }
+std::pair<size_t, size_t> changes(const FileDiff &file)
+{
+  size_t added = 0, removed = 0;
+  for (const auto &hunk : file.hunks)
+    for (const auto &line : hunk.lines)
+    {
+      added += line.type == DiffLineType::Added;
+      removed += line.type == DiffLineType::Removed;
+    }
+  return {added, removed};
+}
 } // namespace
 MainWindow::~MainWindow()
 {
@@ -201,12 +212,20 @@ void MainWindow::createControls()
   if (automationDirectory_.empty())
   {
     diff_.zoom(static_cast<int>(std::clamp<DWORD>(settings_.number(L"FontSize", 11), 6, 40)) - diff_.fontSize());
-    SetWindowTextW(base_, settings_.string(L"Base").c_str());
+    readyBase_ = settings_.string(L"ReadyBase");
+    rangeBase_ = settings_.string(L"RangeBase");
+    if (rangeBase_.empty())
+      rangeBase_ = settings_.string(L"Base");
     auto target = settings_.string(L"Target");
     if (!target.empty())
       SetWindowTextW(target_, target.c_str());
     savedCommit_ = settings_.string(L"Commit");
   }
+  baseMode_ = source(source_);
+  if (baseMode_ == ChangeSource::ReadyToPush)
+    SetWindowTextW(base_, readyBase_.c_str());
+  else if (baseMode_ == ChangeSource::Range)
+    SetWindowTextW(base_, rangeBase_.c_str());
   applyTheme();
   sourceChanged();
   if (!directory_.empty())
@@ -279,17 +298,9 @@ void MainWindow::layout()
     move(compare_, targetVisible ? tx + scale(288) : pad + scale(325), y, scale(82), row);
     y += row + gap;
   }
-  bool ready = mode == ChangeSource::ReadyToPush;
-  ShowWindow(commits_, ready ? SW_SHOW : SW_HIDE);
-  ShowWindow(commitLabel_, ready ? SW_SHOW : SW_HIDE);
+  ShowWindow(commits_, SW_HIDE);
+  ShowWindow(commitLabel_, SW_HIDE);
   int fy = y;
-  if (ready)
-  {
-    move(commitLabel_, pad, fy, left - pad, scale(22));
-    fy += scale(24);
-    move(commits_, pad, fy + scale(1), left - pad, scale(250));
-    fy += row + gap;
-  }
   move(fileLabel_, pad, fy, left - pad, scale(22));
   fy += scale(25);
   move(files_, pad, fy, left - pad, height - fy - footerHeight);
@@ -327,6 +338,16 @@ void MainWindow::moveSplitter(int x)
 void MainWindow::sourceChanged()
 {
   endPreview();
+  if (baseMode_ == ChangeSource::ReadyToPush)
+    readyBase_ = getText(base_);
+  else if (baseMode_ == ChangeSource::Range)
+    rangeBase_ = getText(base_);
+  auto nextMode = source(source_);
+  if (nextMode == ChangeSource::ReadyToPush)
+    SetWindowTextW(base_, readyBase_.c_str());
+  else if (nextMode == ChangeSource::Range)
+    SetWindowTextW(base_, rangeBase_.c_str());
+  baseMode_ = nextMode;
   series_.clear();
   SendMessageW(commits_, CB_RESETCONTENT, 0, 0);
   layout();
@@ -350,8 +371,6 @@ void MainWindow::refresh(bool seriesSelection)
       request.target = series_[static_cast<size_t>(index) - 1].id;
     }
   }
-  else if (request.source == ChangeSource::ReadyToPush)
-    SendMessageW(commits_, CB_SETCURSEL, 0, 0);
   loading_ = true;
   SetWindowTextW(status_, L"Loading Git changes… You can change the source or refresh again.");
   controller_->request(std::move(request));
@@ -369,9 +388,11 @@ void MainWindow::loaded()
   {
     rememberFileScroll();
     diff_.setMessage(L"Unable to load changes\n\n" + result->error);
+    fileListItems_.clear();
     snapshot_ = {};
     scrollContext_.clear();
     selectedPath_.clear();
+    selectedListKey_.clear();
     SendMessageW(files_, LB_RESETCONTENT, 0, 0);
     SetWindowTextW(info_, directory_.c_str());
     SetWindowTextW(status_, L"Git failed — see the diff pane for details.");
@@ -386,22 +407,11 @@ void MainWindow::loaded()
   // Invalidate the view's pointer before replacing the owning document.
   rememberFileScroll();
   diff_.setFile(nullptr);
+  fileListItems_.clear();
   snapshot_ = std::move(result->snapshot);
   scrollContext_ = snapshot_.root + L"\n" + std::to_wstring(static_cast<int>(result->request.source)) + L"\n" + result->request.base +
                    L"\n" + result->request.target + (result->request.fullFile ? L"\nfull" : L"\ncompact");
   messageReturnIndex_ = -1;
-  fileChanges_.clear();
-  for (const auto &file : snapshot_.document.files)
-  {
-    size_t added = 0, removed = 0;
-    for (const auto &h : file.hunks)
-      for (const auto &line : h.lines)
-      {
-        added += line.type == DiffLineType::Added;
-        removed += line.type == DiffLineType::Removed;
-      }
-    fileChanges_.emplace_back(added, removed);
-  }
   directory_ = snapshot_.root;
   if (result->request.source == ChangeSource::ReadyToPush)
   {
@@ -423,8 +433,8 @@ void MainWindow::loaded()
         if (series_[i].id == id)
         {
           SendMessageW(commits_, CB_SETCURSEL, i + 1, 0);
-          refresh(true);
-          return;
+          selectedListKey_ = L"commit\n" + id;
+          break;
         }
     }
   }
@@ -438,7 +448,24 @@ void MainWindow::loaded()
   tooltipIndex_ = -1;
   SendMessageW(tooltip_, TTM_POP, 0, 0);
   SendMessageW(files_, LB_RESETCONTENT, 0, 0);
-  int selected = 0, index = 0;
+  fileListItems_.clear();
+  int selected = -1, fallback = -1;
+  auto addItem = [&](FileListItem item) {
+    int index = static_cast<int>(fileListItems_.size());
+    SendMessageW(files_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item.label.c_str()));
+    if (!item.key.empty() && item.key == selectedListKey_)
+      selected = index;
+    fileListItems_.push_back(std::move(item));
+    return index;
+  };
+  auto addFile = [&](const FileDiff &file, std::wstring key, size_t commitIndex = 0) {
+    std::wstring label(1, statusLetter(file.status));
+    label += L"   " + file.path();
+    if (file.binary && file.status != FileStatus::Binary)
+      label += L"  [binary]";
+    auto [added, removed] = changes(file);
+    return addItem({FileListItemKind::File, &file, commitIndex, added, removed, std::move(label), std::move(key)});
+  };
   commitMessageFile_ = {};
   if (!snapshot_.commitId.empty())
   {
@@ -447,61 +474,94 @@ void MainWindow::loaded()
     std::wstring line;
     while (std::getline(message, line))
       commitMessageFile_.metadata.push_back(line.empty() ? L" " : line);
-    SendMessageW(files_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"<<Commit Message>>"));
-    index = 1;
+    fallback = addItem({FileListItemKind::CommitMessage, nullptr, 0, 0, 0, L"<<Commit Message>>", L"message"});
   }
-  size_t added = 0, removed = 0;
-  for (const auto &file : snapshot_.document.files)
+  bool grouped = result->request.source == ChangeSource::Range || result->request.source == ChangeSource::ReadyToPush;
+  if (grouped)
   {
-    std::wstring label(1, statusLetter(file.status));
-    label += L"   " + file.path();
-    if (file.binary && file.status != FileStatus::Binary)
-      label += L"  [binary]";
-    SendMessageW(files_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
-    if (file.path() == selectedPath_)
-      selected = index;
-    ++index;
-    for (const auto &h : file.hunks)
-      for (const auto &line : h.lines)
+    size_t count = std::min(snapshot_.commits.size(), snapshot_.commitDocuments.size());
+    for (size_t commitIndex = 0; commitIndex < count; ++commitIndex)
+    {
+      const auto &commit = snapshot_.commits[commitIndex];
+      auto key = L"commit\n" + commit.id;
+      int header =
+        addItem({FileListItemKind::Commit, nullptr, commitIndex, 0, 0, commit.id.substr(0, 8) + L"  " + commit.subject, key});
+      if (fallback < 0)
+        fallback = header;
+      for (const auto &file : snapshot_.commitDocuments[commitIndex].files)
       {
-        added += line.type == DiffLineType::Added;
-        removed += line.type == DiffLineType::Removed;
+        int index = addFile(file, key + L"\n" + file.path(), commitIndex);
+        if (count == 1)
+        {
+          if (fallback == header)
+            fallback = index;
+          if (selected < 0 && file.path() == selectedPath_)
+            selected = index;
+        }
       }
+    }
+    if (count > 1)
+    {
+      if (count)
+        addItem({FileListItemKind::Spacer, nullptr, 0, 0, 0, L"", L"range-spacer"});
+      int summary = addItem({FileListItemKind::Summary, nullptr, 0, 0, 0, L"Summary", L"summary"});
+      fallback = summary;
+      for (const auto &file : snapshot_.document.files)
+      {
+        int index = addFile(file, L"summary\n" + file.path());
+        if (fallback == summary)
+          fallback = index;
+        if (selected < 0 && file.path() == selectedPath_)
+          selected = index;
+      }
+    }
   }
+  else
+    for (const auto &file : snapshot_.document.files)
+    {
+      int index = addFile(file, L"file\n" + file.path());
+      if (fallback < 0)
+        fallback = index;
+      if (selected < 0 && file.path() == selectedPath_)
+        selected = index;
+    }
   SendMessageW(files_, WM_SETREDRAW, TRUE, 0);
   InvalidateRect(files_, nullptr, TRUE);
-  if (!snapshot_.document.files.empty() || !snapshot_.commitId.empty())
+  if (!fileListItems_.empty())
   {
+    if (selected < 0)
+      selected = std::max(0, fallback);
     SendMessageW(files_, LB_SETCURSEL, selected, 0);
     selectFile();
   }
   else
   {
     selectedPath_.clear();
+    selectedListKey_.clear();
     diff_.setMessage(snapshot_.notice.empty() ? L"No changes in this comparison.\n\nStaged shows the index; Unstaged shows "
                                                 L"tracked working-tree edits.\nNew untracked files appear after git add."
                                               : snapshot_.notice);
   }
-  auto status = std::to_wstring(snapshot_.document.files.size()) + L" files changed    +" + std::to_wstring(added) + L"    −" +
-                std::to_wstring(removed);
-  if (!snapshot_.notice.empty())
-    status += L"    " + snapshot_.notice;
-  else
-    status += L"    |    F5 Refresh · F Full file · Ctrl+PgUp/PgDn Change · Ctrl+Down/Up File · Space Commit message · Ctrl+Shift+D "
-              L"View · Ctrl+C Copy";
-  SetWindowTextW(status_, status.c_str());
+  updateStatus();
   layout();
 }
-void MainWindow::navigateFile(int direction)
+void MainWindow::navigateList(int direction, bool focusDiff)
 {
-  SetFocus(diff_.handle());
-  if (loading_ || snapshot_.document.files.empty())
+  if (focusDiff)
+    SetFocus(diff_.handle());
+  if (loading_ || fileListItems_.empty() || !direction)
     return;
-  int first = snapshot_.commitId.empty() ? 0 : 1;
   int current = static_cast<int>(SendMessageW(files_, LB_GETCURSEL, 0, 0));
-  int next = std::clamp(current + direction, first, first + static_cast<int>(snapshot_.document.files.size()) - 1);
-  SendMessageW(files_, LB_SETCURSEL, next, 0);
-  selectFile();
+  if (current < 0)
+    current = direction < 0 ? static_cast<int>(fileListItems_.size()) : -1;
+  for (int next = current + (direction < 0 ? -1 : 1); next >= 0 && next < static_cast<int>(fileListItems_.size());
+       next += direction < 0 ? -1 : 1)
+    if (fileListItems_[static_cast<size_t>(next)].kind != FileListItemKind::Spacer)
+    {
+      SendMessageW(files_, LB_SETCURSEL, next, 0);
+      selectFile();
+      return;
+    }
 }
 void MainWindow::toggleCommitMessage()
 {
@@ -530,33 +590,92 @@ void MainWindow::selectFile()
 {
   endPreview();
   rememberFileScroll();
-  auto index = SendMessageW(files_, LB_GETCURSEL, 0, 0);
-  if (!snapshot_.commitId.empty())
+  int index = static_cast<int>(SendMessageW(files_, LB_GETCURSEL, 0, 0));
+  if (index < 0 || static_cast<size_t>(index) >= fileListItems_.size())
+    return;
+  const auto &item = fileListItems_[static_cast<size_t>(index)];
+  if (item.kind == FileListItemKind::Spacer)
   {
-    if (index == 0)
-    {
-      selectedPath_ = L"<<Commit Message>>";
-      diff_.setFile(&commitMessageFile_, false, true);
-      return;
-    }
-    --index;
+    int summary = std::min(index + 1, static_cast<int>(fileListItems_.size()) - 1);
+    SendMessageW(files_, LB_SETCURSEL, summary, 0);
+    selectFile();
+    return;
   }
-  if (index >= 0 && static_cast<size_t>(index) < snapshot_.document.files.size())
+  selectedListKey_ = item.key;
+  updateStatus();
+  if (item.kind == FileListItemKind::CommitMessage)
   {
-    auto &file = snapshot_.document.files[static_cast<size_t>(index)];
-    selectedPath_ = file.path();
-    diff_.setFile(&file);
-    auto saved = fileScrollPositions_.find(fileScrollKey(selectedPath_));
+    selectedPath_ = L"<<Commit Message>>";
+    diff_.setFile(&commitMessageFile_, false, true);
+    return;
+  }
+  if (item.kind == FileListItemKind::Commit)
+  {
+    const auto &commit = snapshot_.commits[item.commitIndex];
+    selectedPath_ = L"<<Commit Message>>";
+    listMessageFile_ = {};
+    listMessageFile_.newPath = L"<<Commit Message>> - " + commit.id.substr(0, 8);
+    std::wistringstream message(commit.message);
+    std::wstring line;
+    while (std::getline(message, line))
+      listMessageFile_.metadata.push_back(line.empty() ? L" " : line);
+    diff_.setFile(&listMessageFile_, false, true);
+    return;
+  }
+  if (item.kind == FileListItemKind::Summary)
+  {
+    selectedPath_ = L"<<Summary>>";
+    listMessageFile_ = {};
+    listMessageFile_.newPath = L"<<Summary>>";
+    listMessageFile_.metadata = {L"Summary", L" ", L"Combined changes from " + snapshot_.base + L".", L" ", L"Commits:"};
+    for (const auto &commit : snapshot_.commits)
+      listMessageFile_.metadata.push_back(commit.id.substr(0, 8) + L"  " + commit.subject);
+    diff_.setFile(&listMessageFile_, false, true);
+    return;
+  }
+  if (item.file)
+  {
+    selectedPath_ = item.file->path();
+    diff_.setFile(item.file);
+    auto saved = fileScrollPositions_.find(fileScrollKey(selectedListKey_));
     if (saved != fileScrollPositions_.end())
       diff_.scroll(saved->second);
     else if (fullFile_)
       diff_.showFirstChange();
   }
 }
+void MainWindow::updateStatus()
+{
+  const DiffDocument *document = &snapshot_.document;
+  int index = static_cast<int>(SendMessageW(files_, LB_GETCURSEL, 0, 0));
+  if (index >= 0 && static_cast<size_t>(index) < fileListItems_.size())
+  {
+    const auto &item = fileListItems_[static_cast<size_t>(index)];
+    bool commitItem =
+      item.kind == FileListItemKind::Commit || (item.kind == FileListItemKind::File && item.key.rfind(L"commit\n", 0) == 0);
+    if (commitItem && item.commitIndex < snapshot_.commitDocuments.size())
+      document = &snapshot_.commitDocuments[item.commitIndex];
+  }
+  size_t added = 0, removed = 0;
+  for (const auto &file : document->files)
+  {
+    auto counts = changes(file);
+    added += counts.first;
+    removed += counts.second;
+  }
+  auto status =
+    std::to_wstring(document->files.size()) + L" files changed    +" + std::to_wstring(added) + L"    −" + std::to_wstring(removed);
+  if (!snapshot_.notice.empty())
+    status += L"    " + snapshot_.notice;
+  else
+    status += L"    |    F5 Refresh · F Full file · Ctrl+PgUp/PgDn Change · Ctrl+Down/Up List · Space Commit message · Ctrl+Shift+D "
+              L"View · Ctrl+C Copy";
+  SetWindowTextW(status_, status.c_str());
+}
 void MainWindow::rememberFileScroll()
 {
-  if (!scrollContext_.empty() && !selectedPath_.empty() && diff_.file() && !diff_.plainText())
-    fileScrollPositions_[fileScrollKey(selectedPath_)] = diff_.topRow();
+  if (!scrollContext_.empty() && !selectedListKey_.empty() && diff_.file() && !diff_.plainText())
+    fileScrollPositions_[fileScrollKey(selectedListKey_)] = diff_.topRow();
 }
 std::wstring MainWindow::fileScrollKey(const std::wstring &path) const { return scrollContext_ + L"\n" + path; }
 void MainWindow::toggle()
@@ -569,8 +688,7 @@ void MainWindow::toggleFullFile()
 {
   fullFile_ = SendMessageW(fullFileButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
   diff_.setChangeMinimap(fullFile_);
-  bool selectedCommit = source(source_) == ChangeSource::ReadyToPush && SendMessageW(commits_, CB_GETCURSEL, 0, 0) > 0;
-  refresh(selectedCommit);
+  refresh();
 }
 void MainWindow::previewCommit(int index)
 {
@@ -699,6 +817,12 @@ void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
   {
     bool commit = item.CtlID == Commits;
     bool combo = item.CtlID != Files;
+    const FileListItem *listItem = !combo && item.itemID < fileListItems_.size() ? &fileListItems_[item.itemID] : nullptr;
+    if (listItem && listItem->kind == FileListItemKind::Spacer)
+    {
+      RestoreDC(item.hDC, saved);
+      return;
+    }
     auto length = SendMessageW(item.hwndItem, combo ? CB_GETLBTEXTLEN : LB_GETTEXTLEN, item.itemID, 0);
     if (length >= 0)
     {
@@ -709,10 +833,20 @@ void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
       RECT textRect = item.rcItem;
       textRect.left += pad;
       textRect.right -= pad;
-      int fileIndex = static_cast<int>(item.itemID) - (snapshot_.commitId.empty() ? 0 : 1);
-      if (!combo && fileIndex >= 0 && static_cast<size_t>(fileIndex) < fileChanges_.size())
+      bool commitHeader = listItem && listItem->kind == FileListItemKind::Commit;
+      bool sectionHeader = commitHeader || (listItem && listItem->kind == FileListItemKind::Summary);
+      if (sectionHeader)
       {
-        auto [added, removed] = fileChanges_[fileIndex];
+        RECT separator{textRect.left, item.rcItem.top, textRect.right, item.rcItem.top + 1};
+        auto brush = CreateSolidBrush(themeColor(ThemeColor::Border));
+        FillRect(item.hDC, &separator, brush);
+        DeleteObject(brush);
+        textRect.top += MulDiv(2, static_cast<int>(dpi_), 96);
+        SetTextColor(item.hDC, themeColor(selected ? ThemeColor::SelectionText : ThemeColor::Title));
+      }
+      if (listItem && listItem->kind == FileListItemKind::File)
+      {
+        auto [added, removed] = std::pair{listItem->added, listItem->removed};
         int cell = MulDiv(13, static_cast<int>(dpi_), 96);
         RECT indicator = textRect;
         indicator.left = indicator.right - cell * 2;
@@ -730,19 +864,22 @@ void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
         drawIndicator(removed, ThemeColor::RemovedIndicator);
         drawIndicator(added, ThemeColor::AddedIndicator);
         textRect.right -= cell * 2 + pad;
+        textRect.left += pad;
         SetTextColor(item.hDC, themeColor(selected ? ThemeColor::SelectionText : ThemeColor::Text));
       }
-      bool columns = commit ? item.itemID > 0 : !combo && value.size() >= 4 && value.substr(1, 3) == L"   ";
+      bool columns = commit ? item.itemID > 0 : commitHeader || (listItem && listItem->kind == FileListItemKind::File);
       if (columns)
       {
         RECT prefix = textRect;
-        prefix.right = textRect.left + MulDiv(commit ? 80 : 28, static_cast<int>(dpi_), 96);
-        auto code = value.substr(0, commit ? 8 : 1);
+        bool commitColumns = commit || commitHeader;
+        prefix.right = textRect.left + MulDiv(commitColumns ? 80 : 28, static_cast<int>(dpi_), 96);
+        auto code = value.substr(0, commitColumns ? 8 : 1);
         DrawTextW(item.hDC, code.c_str(), static_cast<int>(code.size()), &prefix, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
         textRect.left = prefix.right;
-        value.erase(0, commit ? 10 : 4);
+        value.erase(0, commitColumns ? 10 : 4);
       }
-      if (!combo)
+      bool file = listItem && listItem->kind == FileListItemKind::File;
+      if (file)
       {
         auto separator = value.find_last_of(L"/\\");
         if (separator != std::wstring::npos)
@@ -750,12 +887,12 @@ void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
       }
       SIZE textSize{};
       GetTextExtentPoint32W(item.hDC, value.c_str(), static_cast<int>(value.size()), &textSize);
-      UINT align = !combo && textSize.cx > textRect.right - textRect.left ? DT_RIGHT : DT_LEFT;
+      UINT align = file && textSize.cx > textRect.right - textRect.left ? DT_RIGHT : DT_LEFT;
       int textClip = SaveDC(item.hDC);
       IntersectClipRect(item.hDC, textRect.left, textRect.top, textRect.right, textRect.bottom);
       DrawTextW(item.hDC, value.c_str(), static_cast<int>(value.size()), &textRect,
-        align | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | (combo ? DT_END_ELLIPSIS : 0));
-      auto separator = combo ? std::wstring::npos : value.find_last_of(L"/\\");
+        align | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | (combo || commitHeader ? DT_END_ELLIPSIS : 0));
+      auto separator = file ? value.find_last_of(L"/\\") : std::wstring::npos;
       if (separator != std::wstring::npos)
       {
         SIZE prefixSize{};
@@ -786,10 +923,21 @@ void MainWindow::saveSettings()
   settings_.setNumber(L"FontSize", diff_.fontSize());
   settings_.setNumber(L"DarkTheme", darkTheme);
   settings_.setNumber(L"FilePaneWidth", static_cast<DWORD>(filePaneWidth_));
-  settings_.setString(L"Base", getText(base_));
+  if (source(source_) == ChangeSource::ReadyToPush)
+    readyBase_ = getText(base_);
+  else if (source(source_) == ChangeSource::Range)
+    rangeBase_ = getText(base_);
+  settings_.setString(L"ReadyBase", readyBase_);
+  settings_.setString(L"RangeBase", rangeBase_);
+  settings_.setString(L"Base", rangeBase_);
   settings_.setString(L"Target", getText(target_));
-  auto index = SendMessageW(commits_, CB_GETCURSEL, 0, 0);
-  settings_.setString(L"Commit", index > 0 && static_cast<size_t>(index) <= series_.size() ? series_[index - 1].id : L"");
+  std::wstring commit;
+  if (source(source_) == ChangeSource::ReadyToPush && selectedListKey_.rfind(L"commit\n", 0) == 0)
+  {
+    size_t end = selectedListKey_.find(L'\n', 7);
+    commit = selectedListKey_.substr(7, end - 7);
+  }
+  settings_.setString(L"Commit", commit);
   WINDOWPLACEMENT placement{sizeof(placement)};
   if (GetWindowPlacement(hwnd_, &placement))
   {
@@ -832,15 +980,18 @@ void MainWindow::applyTheme()
 }
 std::wstring MainWindow::filePathAt(int index) const
 {
-  if (!snapshot_.commitId.empty())
-    --index;
-  if (index < 0 || static_cast<size_t>(index) >= snapshot_.document.files.size())
+  if (index < 0 || static_cast<size_t>(index) >= fileListItems_.size() || !fileListItems_[static_cast<size_t>(index)].file)
     return {};
-  return snapshot_.document.files[index].path();
+  return fileListItems_[static_cast<size_t>(index)].file->path();
 }
 LRESULT CALLBACK MainWindow::filesProcedure(HWND hwnd, UINT msg, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data)
 {
   auto self = reinterpret_cast<MainWindow *>(data);
+  if (msg == WM_KEYDOWN && (w == VK_UP || w == VK_DOWN))
+  {
+    self->navigateList(w == VK_UP ? -1 : 1, false);
+    return 0;
+  }
   if (msg == WM_MOUSEMOVE)
   {
     auto hit = SendMessageW(hwnd, LB_ITEMFROMPOINT, 0, l);
@@ -850,11 +1001,10 @@ LRESULT CALLBACK MainWindow::filesProcedure(HWND hwnd, UINT msg, WPARAM w, LPARA
       self->tooltipIndex_ = index;
       auto path = self->filePathAt(index);
       self->tooltipText_ = path.empty() ? L"" : (std::filesystem::path(self->snapshot_.root) / path).wstring();
-      int fileIndex = index - (self->snapshot_.commitId.empty() ? 0 : 1);
-      if (!path.empty() && fileIndex >= 0 && static_cast<size_t>(fileIndex) < self->fileChanges_.size())
+      if (!path.empty() && index >= 0 && static_cast<size_t>(index) < self->fileListItems_.size())
       {
-        auto [added, removed] = self->fileChanges_[fileIndex];
-        self->tooltipText_ += L"    -" + std::to_wstring(removed) + L" +" + std::to_wstring(added);
+        const auto &item = self->fileListItems_[static_cast<size_t>(index)];
+        self->tooltipText_ += L"    -" + std::to_wstring(item.removed) + L" +" + std::to_wstring(item.added);
       }
       SendMessageW(self->tooltip_, TTM_POP, 0, 0);
       TOOLINFOW tool{sizeof(tool)};
@@ -1167,8 +1317,8 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
         case Toggle: toggle(); break;
         case Screenshot: screenshot(); break;
         case ZoomIn: diff_.zoom(1); break;
-        case NextFile: navigateFile(1); break;
-        case PreviousFile: navigateFile(-1); break;
+        case NextFile: navigateList(1); break;
+        case PreviousFile: navigateList(-1); break;
         case NextChange:
           SetFocus(diff_.handle());
           diff_.navigateChange(1);

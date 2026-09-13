@@ -90,12 +90,16 @@ try
   check(!repo.load(q, cancel).notice.empty(), "no upstream message");
   q.base = L"main";
   auto ready = repo.load(q, cancel);
-  check(ready.commits.size() == 2 && ready.document.files.size() == 2, "manual ready to push");
+  check(ready.commits.size() == 2 && ready.document.files.size() == 2 && ready.commitDocuments.size() == 2 &&
+          ready.commits[0].subject == L"one" && ready.commits[1].subject == L"two" && ready.commitDocuments[0].files.size() == 1 &&
+          ready.commitDocuments[0].files[0].path() == L"one.txt" && ready.commitDocuments[1].files.size() == 1 &&
+          ready.commitDocuments[1].files[0].path() == L"two.txt",
+    "manual ready to push with commit documents");
   run({L"branch", L"--set-upstream-to=main"});
   q.base.clear();
   check(repo.load(q, cancel).commits.size() == 2, "upstream");
   q.source = ChangeSource::Commit;
-  q.target = ready.commits[0].id;
+  q.target = ready.commits.back().id;
   check(repo.load(q, cancel).document.files.size() == 1, "single commit");
   auto commitDetails = repo.load(q, cancel);
   check(commitDetails.commitId == q.target && commitDetails.commitMessage.find(L"two") != std::wstring::npos,
@@ -107,7 +111,13 @@ try
   q.source = ChangeSource::Range;
   q.base = L"main";
   q.target = L"HEAD";
-  check(repo.load(q, cancel).document.files.size() == 2, "range");
+  auto range = repo.load(q, cancel);
+  check(range.document.files.size() == 2, "range");
+  check(range.commits.size() == 2 && range.commitDocuments.size() == 2 && range.commits[0].subject == L"one" &&
+          range.commits[1].subject == L"two" && range.commitDocuments[0].files.size() == 1 &&
+          range.commitDocuments[0].files[0].path() == L"one.txt" && range.commitDocuments[1].files.size() == 1 &&
+          range.commitDocuments[1].files[0].path() == L"two.txt",
+    "range commit documents");
   write(L"staged.txt", "staged\n");
   write(L"новый файл.txt", u8"Привет мир\n");
   write(L"empty.txt", "");

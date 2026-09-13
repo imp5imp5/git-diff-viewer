@@ -94,9 +94,11 @@ Use the source dropdown to choose what to review:
 | **Single commit** | Changes introduced by the target commit. Merge commits use the first parent. |
 | **Commit range** | Direct comparison between the base and target refs. |
 
-For **Ready to push**, leave the base field empty to use the configured upstream, or enter a branch/ref such as `main`. This mode uses locally available refs and does not fetch remote updates. If no upstream exists, enter a base explicitly.
+For **Ready to push**, leave the base field empty to use the configured upstream, or enter a branch/ref such as `main`. This mode uses locally available refs and does not fetch remote updates. If no upstream exists, enter a base explicitly. Its base value is stored separately from **Commit range**, so a range ref from another repository does not override the upstream default.
 
 For **Single commit**, enter a SHA or ref in **Target / commit**. For **Commit range**, fill in both comparison fields. Click **Compare** after editing the fields.
+
+In **Ready to push** and **Commit range**, **Changed files** groups files by commit. A horizontal line introduces each commit subject. For comparisons with multiple commits, another line after one empty row introduces **Summary**, which contains the combined diff. Selecting **Summary** shows the compared base and a one-line list of commit subjects with short hashes. A single-commit comparison omits this redundant summary. The status bar shows line and file counts for the selected commit group, or totals while **Summary** and its files are selected.
 
 New untracked files are not included in the working-tree diff. They appear after you stage them using Git outside the application.
 
@@ -112,9 +114,7 @@ Two block indicators after each filename show removed lines (red) and added line
 Their eight heights represent 1, 2, 3, 4–5, 6–9, 10–30, 31–100, and more than 100 lines.
 Zero-count blocks are drawn in the row background color and are invisible; binary files have no textual line counts.
 
-In **Ready to push**, choose **All commits** for the combined diff or select an individual commit. Hovering over a commit in the open dropdown temporarily previews its full message; leaving the dropdown restores the previous diff and scroll position.
-
-When viewing an individual commit, the first file-list entry is **`<<Commit Message>>`**. It displays the SHA, author, date, and full message without diff headers or a side-by-side divider. Message colors follow the selected theme.
+Select a commit heading to display its SHA, author, date, and full message without diff headers or a side-by-side divider. Message colors follow the selected theme. In **Single commit**, the same information appears in the first file-list entry, **`<<Commit Message>>`**.
 
 Use **Refresh** to reload repository changes. Refresh is manual.
 
@@ -128,7 +128,7 @@ Use **Full file** or press `F` to show every line of each changed text file inst
 | `Ctrl+Shift+D` | Toggle unified / side-by-side layout. |
 | `F` while not editing a ref or using a dropdown | Toggle full-file context. |
 | `Ctrl+Page Up` / `Ctrl+Page Down` | Go to the previous / next changed block. |
-| `Ctrl+Down` / `Ctrl+Up` | Select the next / previous changed file. |
+| `Ctrl+Down` / `Ctrl+Up` | Select the next / previous item in **Changed files**. |
 | `Space` with the file list, diff, or closed commit dropdown focused | Toggle the current commit message, restoring the previous file and scroll position on return. |
 | Middle click in the diff, then move up/down | Enable autoscroll. Distance from the click point controls speed. Click again or press Escape to stop. |
 | `Ctrl+mouse wheel` over the diff | Change diff font size. |

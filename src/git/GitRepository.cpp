@@ -11,6 +11,32 @@ std::wstring trim(std::string s)
     s.pop_back();
   return fromUtf8(s);
 }
+std::vector<Commit> parseCommits(const std::string &log)
+{
+  std::vector<Commit> commits;
+  size_t p = 0;
+  while (p < log.size())
+  {
+    while (p < log.size() && (log[p] == '\n' || log[p] == '\r'))
+      ++p;
+    size_t a = log.find('\0', p);
+    if (a == std::string::npos)
+      break;
+    size_t b = log.find('\0', a + 1);
+    if (b == std::string::npos)
+      break;
+    size_t c = log.find('\0', b + 1);
+    if (c == std::string::npos)
+      break;
+    size_t d = log.find('\0', c + 1);
+    if (d == std::string::npos)
+      break;
+    commits.push_back({fromUtf8(std::string_view(log).substr(p, a - p)), fromUtf8(std::string_view(log).substr(a + 1, b - a - 1)),
+      fromUtf8(std::string_view(log).substr(b + 1, c - b - 1)), fromUtf8(std::string_view(log).substr(c + 1, d - c - 1))});
+    p = d + 1;
+  }
+  return commits;
+}
 } // namespace
 RepositorySnapshot GitRepository::load(const CompareRequest &request, const std::atomic_bool &cancel) const
 {
@@ -36,10 +62,28 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
       throw std::runtime_error("Enter a commit or branch in the comparison fields, then click Compare.");
     return trim(run({L"rev-parse", L"--verify", L"--end-of-options", ref + L"^{commit}"}).out);
   };
+  auto commits = [&](const std::wstring &range, bool reverse = false) {
+    std::vector<std::wstring> logArgs = {
+      L"log", L"--encoding=UTF-8", L"--format=%H%x00%s%x00%an%x00%H%nAuthor: %an <%ae>%nDate: %aI%n%n%B%x00"};
+    if (reverse)
+      logArgs.push_back(L"--reverse");
+    logArgs.insert(logArgs.end(), {range, L"--"});
+    return parseCommits(run(logArgs).out);
+  };
   std::vector<std::wstring> args = {L"diff", L"--no-color", L"--no-ext-diff", L"--no-textconv", L"--no-relative", L"--src-prefix=a/",
     L"--dst-prefix=b/", L"--find-renames", L"--submodule=short", L"--ignore-submodules=none",
     request.fullFile ? L"--unified=1000000" : L"--unified=3", L"--output-indicator-new=+", L"--output-indicator-old=-",
     L"--output-indicator-context= "};
+  auto loadCommitDocuments = [&] {
+    snapshot.commitDocuments.reserve(snapshot.commits.size());
+    for (const auto &commit : snapshot.commits)
+    {
+      auto commitArgs = args;
+      commitArgs[0] = L"show";
+      commitArgs.insert(commitArgs.end(), {L"--format=", L"--root", L"--first-parent", commit.id, L"--"});
+      snapshot.commitDocuments.push_back(UnifiedDiffParser{}.parse(run(commitArgs).out));
+    }
+  };
   switch (request.source)
   {
     case ChangeSource::Staged:
@@ -72,31 +116,8 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
       }
       auto baseId = resolve(base), head = resolve(L"HEAD");
       snapshot.base = base;
-      auto log = run({L"log", L"--encoding=UTF-8", L"--format=%H%x00%s%x00%an%x00%H%nAuthor: %an <%ae>%nDate: %aI%n%n%B%x00",
-                       baseId + L".." + head, L"--"})
-                   .out;
-      size_t p = 0;
-      while (p < log.size())
-      {
-        while (p < log.size() && (log[p] == '\n' || log[p] == '\r'))
-          ++p;
-        size_t a = log.find('\0', p);
-        if (a == std::string::npos)
-          break;
-        size_t b = log.find('\0', a + 1);
-        if (b == std::string::npos)
-          break;
-        size_t c = log.find('\0', b + 1);
-        if (c == std::string::npos)
-          break;
-        size_t d = log.find('\0', c + 1);
-        if (d == std::string::npos)
-          break;
-        snapshot.commits.push_back(
-          {fromUtf8(std::string_view(log).substr(p, a - p)), fromUtf8(std::string_view(log).substr(a + 1, b - a - 1)),
-            fromUtf8(std::string_view(log).substr(b + 1, c - b - 1)), fromUtf8(std::string_view(log).substr(c + 1, d - c - 1))});
-        p = d + 1;
-      }
+      snapshot.commits = commits(baseId + L".." + head, true);
+      loadCommitDocuments();
       args.push_back(baseId + L"..." + head);
       break;
     }
@@ -114,6 +135,8 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
     case ChangeSource::Range:
     {
       auto base = resolve(request.base), target = resolve(request.target);
+      snapshot.commits = commits(base + L".." + target, true);
+      loadCommitDocuments();
       args.push_back(base);
       args.push_back(target);
       snapshot.base = request.base + L" .. " + request.target;
