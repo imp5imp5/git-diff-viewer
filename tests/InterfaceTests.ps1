@@ -66,7 +66,8 @@ try {
     $state=Wait-Idle
     Check ($state.files.Count -eq 9 -and $state.selectedFile -eq 'app.cpp') 'Initial staged files'
     $compactRows=$state.rowCount
-    Invoke-App 'full-file' @('on') | Out-Null
+    $fullLoading=Invoke-App 'full-file' @('on')
+    Check ($fullLoading.loading -and $fullLoading.statusAnimating) 'Full-file mode lazily loads the selected file with status animation'
     $state=Wait-Idle
     Check ($state.fullFile -and $state.selectedFile -eq 'app.cpp' -and $state.rowCount -gt $compactRows -and $state.minimapMarkers -eq 3) 'Full-file mode loads omitted context and shows minimap markers'
     Check ($state.activeChangeStart -gt 0 -and $state.topRow -gt 0 -and -not $state.changeFlashing) 'First full-file visit centers the first change without flashing'
@@ -91,7 +92,8 @@ try {
     $state=Invoke-App 'navigate-change' @('previous')
     Check ($state.activeChangeStart -eq $nextChange -and $state.changeFlashing) 'Previous change navigation returns to the preceding block'
     $savedAppTop=$state.topRow
-    $firstLarge=Invoke-App 'select-file' @('large.txt')
+    Invoke-App 'select-file' @('large.txt') | Out-Null
+    $firstLarge=Wait-Idle
     Check ($firstLarge.activeChangeStart -ge 0 -and $firstLarge.topRow -eq $firstLarge.activeChangeStart) 'First full-file visit moves to the first change'
     $state=Invoke-App 'select-file' @('app.cpp')
     Check ($state.topRow -eq $savedAppTop -and $state.activeChangeStart -eq -1) 'A previously visited full file restores its scroll position'
@@ -249,6 +251,94 @@ try {
     Check ($state.fileList.Count -eq 2 -and
            $state.fileList[0].kind -eq 'commit' -and $state.fileList[0].label.EndsWith('Add second feature') -and
            $state.fileList[1].kind -eq 'file' -and $state.fileList[1].path -eq 'second.txt') 'Single-commit range omits the redundant summary'
+    Invoke-App 'source' @('history') | Out-Null
+    $state=Wait-Idle
+    Check ($state.source -eq 6) 'History is the final source without changing the default source value'
+    Check ($state.fileList[0].kind -eq 'section' -and $state.fileList[0].label -eq 'Unstaged' -and
+           $state.fileList[1].kind -eq 'file' -and $state.fileList[1].path -eq 'notes.txt' -and
+           $state.fileList[2].kind -eq 'spacer' -and
+           $state.fileList[3].kind -eq 'section' -and $state.fileList[3].label -eq 'Staged' -and
+           $state.fileList[13].kind -eq 'spacer' -and
+           $state.fileList[14].kind -eq 'section' -and $state.fileList[14].label -eq 'Ready to push' -and
+           $state.fileList[19].kind -eq 'spacer' -and
+           $state.fileList[20].kind -eq 'section' -and $state.fileList[20].label -eq 'History') 'History section order and three empty separators'
+    Check (@($state.fileList | Where-Object {$_.kind -eq 'spacer'}).Count -eq 3) 'History has exactly three spacer rows'
+    $historyCommits=@($state.fileList | Where-Object {$_.kind -eq 'commit' -and $_.key.StartsWith("history`n")})
+    Check ($historyCommits.Count -eq 10 -and $historyCommits[0].label.EndsWith('History commit 48') -and
+           $historyCommits[1].label.EndsWith('History commit 47') -and
+           @($historyCommits | Where-Object {$_.label.EndsWith('Add second feature') -or $_.label.EndsWith('Add first feature')}).Count -eq 0) 'History initially contains 10 newest-first non-outgoing commits'
+    Check (@($state.fileList | Where-Object {$_.kind -eq 'load-more'}).Count -eq 1) 'History initially exposes Load more'
+    $outgoingFirst=@($state.fileList | Where-Object {$_.kind -eq 'commit' -and $_.key.StartsWith("outgoing`n")})[0]
+    Check ($outgoingFirst.label.EndsWith('Add second feature')) 'Ready to push keeps outgoing commits excluded from History'
+    $unstagedSummary=Invoke-App 'select-list-item' @('0')
+    Check ($unstagedSummary.plainText -and $unstagedSummary.message -eq '' -and
+           @($unstagedSummary.visibleRows | Where-Object {$_.meta -eq 'Unstaged'}).Count -eq 1) 'Unstaged heading opens its summary'
+    $readySummary=Invoke-App 'select-list-item' @('14')
+    Check ($readySummary.plainText -and
+           @($readySummary.visibleRows | Where-Object {$_.meta -eq 'Add second feature'}).Count -eq 1 -and
+           @($readySummary.visibleRows | Where-Object {$_.meta -eq 'Add first feature'}).Count -eq 1 -and
+           @($readySummary.visibleRows | Where-Object {$_.meta -eq ('_' * 80)}).Count -eq 1) 'History Ready to push heading separates full commit messages'
+    $historySummary=Invoke-App 'select-list-item' @('20')
+    Check ($historySummary.plainText -and $historySummary.rowCount -gt 50 -and
+           @($historySummary.visibleRows | Where-Object {$_.meta -eq 'History commit 48'}).Count -eq 1 -and
+           @($historySummary.visibleRows | Where-Object {$_.meta -eq 'Add second feature'}).Count -eq 0) 'History heading shows loaded non-outgoing commit messages'
+    $historyMessage=Invoke-App 'select-list-item' @('21')
+    Check ($historyMessage.plainText -and @($historyMessage.visibleRows | Where-Object {$_.meta -eq 'History commit 48'}).Count -eq 1) 'History commit heading opens its message'
+    $historyFile=Invoke-App 'select-list-item' @('22')
+    Check (-not $historyFile.plainText -and $historyFile.selectedFile -eq 'history.txt' -and
+           $historyFile.selectedListKey.StartsWith("history`n")) 'History commit file opens that commit diff'
+    $stagedAppIndex=-1
+    for($i=0;$i -lt $state.fileList.Count;$i++) {if($state.fileList[$i].key -eq "history-staged`napp.cpp") {$stagedAppIndex=$i;break}}
+    Check ($stagedAppIndex -ge 0) 'History staged file is present'
+    $beforeMore=Invoke-App 'select-list-item' @([string]$stagedAppIndex)
+    Invoke-App 'scroll' @('2') | Out-Null
+    $loadingMore=Invoke-App 'load-more'
+    Check ($loadingMore.loading -and $loadingMore.statusAnimating -and
+           @($loadingMore.fileList | Where-Object {$_.kind -eq 'load-more' -and $_.label -eq 'Loading...'}).Count -eq 1) 'Automation activates Load more with status animation without clearing the list'
+    $state=Wait-Idle
+    Check (@($state.fileList | Where-Object {$_.kind -eq 'commit' -and $_.key.StartsWith("history`n")}).Count -eq 20 -and
+           @($state.fileList | Where-Object {$_.kind -eq 'load-more'}).Count -eq 1 -and -not $state.statusAnimating) 'Load more appends ten commits and stops status animation'
+    Check ($state.selectedListKey -eq $beforeMore.selectedListKey -and $state.selectedFile -eq 'app.cpp' -and $state.topRow -eq 2) 'Load more preserves selection and diff position'
+    Invoke-App 'refresh' | Out-Null
+    $state=Wait-Idle
+    Check (@($state.fileList | Where-Object {$_.kind -eq 'commit' -and $_.key.StartsWith("history`n")}).Count -eq 20) 'History Refresh preserves the expanded limit'
+    Invoke-App 'source' @('staged') | Out-Null
+    $state=Wait-Idle
+    Invoke-App 'source' @('history') | Out-Null
+    $state=Wait-Idle
+    Check (@($state.fileList | Where-Object {$_.kind -eq 'commit' -and $_.key.StartsWith("history`n")}).Count -eq 20) 'Returning to History preserves the expanded limit'
+    $loadMoreIndex=-1
+    for($i=0;$i -lt $state.fileList.Count;$i++) {if($state.fileList[$i].kind -eq 'load-more') {$loadMoreIndex=$i;break}}
+    Check ($loadMoreIndex -gt 0) 'Final History page is available'
+    Invoke-App 'select-list-item' @([string]($loadMoreIndex-1)) | Out-Null
+    Invoke-App 'list-key' @('down') | Out-Null
+    Invoke-App 'list-key' @('space') | Out-Null
+    $state=Wait-Idle
+    Check (@($state.fileList | Where-Object {$_.kind -eq 'commit' -and $_.key.StartsWith("history`n")}).Count -eq 30 -and
+           @($state.fileList | Where-Object {$_.kind -eq 'load-more'}).Count -eq 1) 'Space activates Load more'
+    Invoke-App 'load-more-input' @('enter') | Out-Null
+    $state=Wait-Idle
+    Check (@($state.fileList | Where-Object {$_.kind -eq 'commit' -and $_.key.StartsWith("history`n")}).Count -eq 40 -and
+           @($state.fileList | Where-Object {$_.kind -eq 'load-more'}).Count -eq 1) 'Enter activates Load more'
+    Invoke-App 'load-more-input' @('mouse') | Out-Null
+    $state=Wait-Idle
+    Check (@($state.fileList | Where-Object {$_.kind -eq 'commit' -and $_.key.StartsWith("history`n")}).Count -eq 49 -and
+           @($state.fileList | Where-Object {$_.kind -eq 'load-more'}).Count -eq 0) 'Mouse activates the final page and removes Load more at history end'
+    Capture 'history.png'
+    $emptyRepository=Join-Path $root 'empty-repository'
+    New-Item -ItemType Directory -Path $emptyRepository | Out-Null
+    & git.exe -C $emptyRepository init -b main | Out-Null
+    Check ($LASTEXITCODE -eq 0) 'Create empty History fixture'
+    Invoke-App 'open' @($emptyRepository) | Out-Null
+    $state=Wait-Idle
+    Check ($state.source -eq 6 -and @($state.fileList | Where-Object {$_.kind -eq 'notice'}).Count -eq 3 -and
+           @($state.fileList | Where-Object {$_.kind -eq 'spacer'}).Count -eq 3 -and
+           @($state.fileList | Where-Object {$_.kind -eq 'load-more'}).Count -eq 0) 'Empty repository History shows all section explanations'
+    Check (@($state.fileList | Where-Object {$_.label -eq 'No upstream configured.'}).Count -eq 1) 'History explains a missing upstream'
+    $outgoingSpacerIndex=-1
+    for($i=0;$i -lt $state.fileList.Count;$i++) {if($state.fileList[$i].key -eq 'history-spacer-outgoing') {$outgoingSpacerIndex=$i;break}}
+    $lastSpacer=Invoke-App 'select-list-item' @([string]$outgoingSpacerIndex)
+    Check ($lastSpacer.selectedListKey -eq "history-section`ncommits") 'Trailing spacer redirects safely to the History heading'
     Invoke-App 'open' @((Join-Path $root 'nonexistent')) | Out-Null
     $state=Wait-Idle
     Check ($state.status -like 'Git failed*' -and $state.files.Count -eq 0) 'Invalid repository error'

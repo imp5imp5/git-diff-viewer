@@ -23,6 +23,13 @@ Write-Fixture 'old name.txt' "This file will be renamed.`n"
 Write-Fixture 'deleted.txt' "This file will be deleted.`n"
 Git @('add','.')
 Git @('commit','-m','Base application')
+if($Large) {
+    1..48 | ForEach-Object {
+        Write-Fixture 'history.txt' ("History commit $_`n")
+        Git @('add','history.txt')
+        Git @('commit','-m',("History commit $_"))
+    }
+}
 Git @('checkout','-b','feature/review')
 Write-Fixture 'first.txt' "First local commit.`n"
 Git @('add','.')

@@ -55,11 +55,13 @@ std::string MainWindow::stateJson() const
   RECT r{};
   GetClientRect(hwnd_, &r);
   std::string out = "{\"loading\":" + std::string(loading_ ? "true" : "false") + ",\"repository\":" + json(directory_) +
-                    ",\"branch\":" + json(snapshot_.branch) + ",\"previewCommit\":" + std::to_string(previewIndex_) +
+                    ",\"statusAnimating\":" + (statusAnimationActive_ ? "true" : "false") + ",\"branch\":" + json(snapshot_.branch) +
+                    ",\"previewCommit\":" + std::to_string(previewIndex_) +
                     ",\"source\":" + std::to_string(SendMessageW(source_, CB_GETCURSEL, 0, 0)) +
                     ",\"view\":" + json(side_ ? L"side-by-side" : L"unified") + ",\"fullFile\":" + (fullFile_ ? "true" : "false") +
                     ",\"plainText\":" + (diff_.plainText() ? "true" : "false") + ",\"darkTheme\":" + (darkTheme ? "true" : "false") +
                     ",\"selectedFile\":" + json(selectedPath_) + ",\"selectedListKey\":" + json(selectedListKey_) +
+                    ",\"fileListTop\":" + std::to_string(SendMessageW(files_, LB_GETTOPINDEX, 0, 0)) +
                     ",\"topRow\":" + std::to_string(diff_.topRow()) + ",\"rowCount\":" + std::to_string(diff_.rowCount()) +
                     ",\"visibleRowCount\":" + std::to_string(diff_.visibleRowCount()) +
                     ",\"activeChangeStart\":" + std::to_string(diff_.activeChangeStart()) +
@@ -93,6 +95,9 @@ std::string MainWindow::stateJson() const
       case FileListItemKind::Commit: return L"commit";
       case FileListItemKind::Spacer: return L"spacer";
       case FileListItemKind::Summary: return L"summary";
+      case FileListItemKind::Section: return L"section";
+      case FileListItemKind::Notice: return L"notice";
+      case FileListItemKind::LoadMore: return L"load-more";
     }
     return L"unknown";
   };
@@ -205,10 +210,15 @@ void MainWindow::automationTick()
     else if (command == L"list-key")
     {
       auto value = arg(0);
-      if (value != L"up" && value != L"down")
-        throw std::runtime_error("List key must be up or down.");
+      if (value != L"up" && value != L"down" && value != L"enter" && value != L"space")
+        throw std::runtime_error("List key must be up, down, enter, or space.");
       SetFocus(files_);
-      SendMessageW(files_, WM_KEYDOWN, value == L"up" ? VK_UP : VK_DOWN, 0);
+      SendMessageW(files_, WM_KEYDOWN,
+        value == L"up"      ? VK_UP
+        : value == L"down"  ? VK_DOWN
+        : value == L"enter" ? VK_RETURN
+                            : VK_SPACE,
+        0);
     }
     else if (command == L"toggle-message")
       toggleCommitMessage();
@@ -230,7 +240,7 @@ void MainWindow::automationTick()
     }
     else if (command == L"source")
     {
-      const std::vector<std::wstring> names = {L"staged", L"unstaged", L"head", L"ready", L"commit", L"range"};
+      const std::vector<std::wstring> names = {L"staged", L"unstaged", L"head", L"ready", L"commit", L"range", L"history"};
       auto found = std::find(names.begin(), names.end(), arg(0));
       if (found == names.end())
         throw std::runtime_error("Unknown source.");
@@ -267,6 +277,32 @@ void MainWindow::automationTick()
     }
     else if (command == L"refresh" || command == L"compare")
       refresh();
+    else if (command == L"load-more")
+      loadMoreHistory();
+    else if (command == L"load-more-input")
+    {
+      auto value = arg(0);
+      if (value != L"mouse" && value != L"enter" && value != L"space")
+        throw std::runtime_error("Load more input must be mouse, enter or space.");
+      auto found = std::find_if(fileListItems_.begin(), fileListItems_.end(),
+        [](const auto &item) { return item.kind == FileListItemKind::LoadMore; });
+      if (found == fileListItems_.end())
+        throw std::runtime_error("Load more is not available.");
+      int index = static_cast<int>(found - fileListItems_.begin());
+      SendMessageW(files_, LB_SETCURSEL, index, 0);
+      SendMessageW(files_, LB_SETTOPINDEX, std::max(0, index - 1), 0);
+      SetFocus(files_);
+      if (value == L"enter" || value == L"space")
+        SendMessageW(files_, WM_KEYDOWN, value == L"enter" ? VK_RETURN : VK_SPACE, 0);
+      else if (value == L"mouse")
+      {
+        RECT row{};
+        SendMessageW(files_, LB_GETITEMRECT, index, reinterpret_cast<LPARAM>(&row));
+        auto point = MAKELPARAM((row.left + row.right) / 2, (row.top + row.bottom) / 2);
+        SendMessageW(files_, WM_LBUTTONDOWN, MK_LBUTTON, point);
+        SendMessageW(files_, WM_LBUTTONUP, 0, point);
+      }
+    }
     else if (command == L"select-file")
     {
       if (loading_)

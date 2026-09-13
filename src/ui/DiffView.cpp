@@ -519,6 +519,8 @@ void DiffView::copy()
       output += (left ? left : right)->text;
     output += L"\r\n";
   }
+  if (anchor_ == selected_ && output.size() >= 2)
+    output.resize(output.size() - 2);
   if (!OpenClipboard(hwnd_))
     return;
   SIZE_T bytes = (output.size() + 1) * sizeof(wchar_t);
@@ -678,18 +680,26 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
       }
       break;
     case WM_MOUSEWHEEL:
+    {
       stopAutoScroll();
+      int delta = GET_WHEEL_DELTA_WPARAM(w);
+      MSG queued{};
+      while (PeekMessageW(&queued, hwnd_, WM_MOUSEWHEEL, WM_MOUSEWHEEL, PM_REMOVE))
+        delta += GET_WHEEL_DELTA_WPARAM(queued.wParam);
       if (GET_KEYSTATE_WPARAM(w) & MK_CONTROL)
       {
-        zoomWheel_ += GET_WHEEL_DELTA_WPARAM(w);
+        zoomWheel_ += delta;
         zoom(zoomWheel_ / WHEEL_DELTA);
         zoomWheel_ %= WHEEL_DELTA;
         return 0;
       }
-      wheel_ += GET_WHEEL_DELTA_WPARAM(w);
-      scrollTo(top_ - (wheel_ / WHEEL_DELTA) * 3);
+      wheel_ += delta;
+      int lines = (wheel_ / WHEEL_DELTA) * 3;
       wheel_ %= WHEEL_DELTA;
+      if (lines)
+        scrollTo(top_ - lines);
       return 0;
+    }
     case WM_LBUTTONDOWN:
     {
       if (autoScroll_)

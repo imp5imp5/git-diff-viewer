@@ -8,7 +8,7 @@ The application uses the installed Git command-line client to read repository da
 
 ## Features
 
-- Review staged changes, unstaged changes, all local changes, individual commits, and comparisons between refs.
+- Review staged changes, unstaged changes, all local changes, repository history, individual commits, and comparisons between refs.
 - Inspect local commits relative to an upstream or an explicitly selected base branch.
 - Switch between unified and side-by-side layouts without reloading Git data, while preserving the current viewing position.
 - Display line numbers, added and removed lines, file statuses, renames, and binary-file notices.
@@ -81,6 +81,8 @@ On the first launch, the application opens in **Unstaged** mode with the dark th
 
 The UTF-8 file is replaced atomically when the application closes. On the first launch of this version, existing preferences are imported from `HKEY_CURRENT_USER\Software\gaijin\git_diff_viewer`. The old registry key is removed only after the new file has been written successfully.
 
+History initially loads 10 commits. To choose a different initial page size, close the application and set `HistoryCommitCount` under `[GitDiffViewer]` in `settings.ini` (values from 1 through 1000 are accepted). **Load more** still appends 10 commits at a time.
+
 ### Choose a comparison
 
 Use the source dropdown to choose what to review:
@@ -93,6 +95,7 @@ Use the source dropdown to choose what to review:
 | **Ready to push** | Local commits reachable from `HEAD` but not from the base ref; the combined diff compares the merge base with `HEAD`. |
 | **Single commit** | Changes introduced by the target commit. Merge commits use the first parent. |
 | **Commit range** | Direct comparison between the base and target refs. |
+| **History** | Working-tree sections, outgoing commits, and recent commits from `HEAD` in one list. |
 
 For **Ready to push**, leave the base field empty to use the configured upstream, or enter a branch/ref such as `main`. This mode uses locally available refs and does not fetch remote updates. If no upstream exists, enter a base explicitly. Its base value is stored separately from **Commit range**, so a range ref from another repository does not override the upstream default.
 
@@ -116,9 +119,13 @@ Zero-count blocks are drawn in the row background color and are invisible; binar
 
 Select a commit heading to display its SHA, author, date, and full message without diff headers or a side-by-side divider. Message colors follow the selected theme. In **Single commit**, the same information appears in the first file-list entry, **`<<Commit Message>>`**.
 
+In **History**, **Changed files** contains bold **Unstaged**, **Staged**, **Ready to push**, and **History** headings, with commits shown newest first. Section headings open a summary. Ready to push and History summaries include the full messages of their commits, separated by 80 underscore characters. Empty sections remain visible with an explanation, including repositories without an upstream. Commits listed under **Ready to push** are excluded from the general **History** section. The initial page contains 10 commits by default. Choose **Load more** (or focus it and press `Enter` or `Space`) to append 10 more; refresh starts from the current `HEAD` while retaining the expanded in-session limit. Untracked files are not included.
+
 Use **Refresh** to reload repository changes. Refresh is manual.
 
-Use **Full file** or press `F` to show every line of each changed text file instead of only the changed hunks and their surrounding context. The vertical scrollbar shows removed changes in red and added changes in green. Toggle the mode again to return to the compact diff.
+While a Git operation is running, a moving highlight in the status-line background indicates activity.
+
+Use **Full file** or press `F` to show every line of the selected changed text file instead of only the changed hunks and their surrounding context. Full context is requested lazily for that file and cached for the current refresh, so enabling the mode does not reload every file and commit. The vertical scrollbar shows removed changes in red and added changes in green. Toggle the mode again to return to the compact diff.
 
 ### Keyboard and mouse controls
 
@@ -130,6 +137,7 @@ Use **Full file** or press `F` to show every line of each changed text file inst
 | `Ctrl+Page Up` / `Ctrl+Page Down` | Go to the previous / next changed block. |
 | `Ctrl+Down` / `Ctrl+Up` | Select the next / previous item in **Changed files**. |
 | `Space` with the file list, diff, or closed commit dropdown focused | Toggle the current commit message, restoring the previous file and scroll position on return. |
+| `Enter` or `Space` on **Load more** | Append the next History page. |
 | Middle click in the diff, then move up/down | Enable autoscroll. Distance from the click point controls speed. Click again or press Escape to stop. |
 | `Ctrl+mouse wheel` over the diff | Change diff font size. |
 | `Ctrl+-` / `Ctrl+=` | Decrease / increase diff font size. Numpad plus and minus also work. |
@@ -137,6 +145,10 @@ Use **Full file** or press `F` to show every line of each changed text file inst
 | Mouse drag between the file list and diff | Resize the file list. |
 | `Shift+click` | Extend the row selection. |
 | `Ctrl+A` with the diff focused | Select all diff rows. |
-| `Ctrl+C` with the diff focused | Copy selected rows. |
+| `Ctrl+C` with the diff focused | Copy selected rows. A single row is copied without a trailing line break. |
 | Arrow keys, `Page Up`, `Page Down`, `Home`, `End` | Navigate within the focused diff. |
 | `Ctrl+Shift+S` | Save an application PNG through a file dialog. |
+
+### Automation interface
+
+Launch with `--automation-dir <directory>` to enable the local file-based automation protocol used by the interface tests. The `source` command accepts `history`, History rows report `section`, `notice`, `commit`, `file`, `spacer`, or `load-more` in `fileList`, and the `load-more` command activates the next page. `list-key enter` and `list-key space` exercise keyboard activation; `load-more-input mouse|enter|space` targets the paging row directly. Pagination keeps the selected item, diff position, and list scroll position while appending rows.

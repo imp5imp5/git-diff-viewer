@@ -24,6 +24,7 @@ int main()
     check(settings.number(L"Source", 7) == 7, "missing number fallback");
     check(settings.string(L"Base").empty(), "missing string fallback");
     settings.setNumber(L"Source", 3);
+    settings.setNumber(L"HistoryCommitCount", 25);
     settings.setString(L"Base", L"feature/проба\\line\nnext");
     WINDOWPLACEMENT placement{sizeof(placement)};
     placement.showCmd = SW_SHOWMAXIMIZED;
@@ -42,6 +43,7 @@ int main()
 
     auto loaded = Settings::loadFile(file);
     check(loaded.number(L"Source", 0) == 3, "number roundtrip");
+    check(loaded.number(L"HistoryCommitCount", 0) == 25, "history commit count roundtrip");
     check(loaded.string(L"Base") == L"feature/проба\\line\nnext", "Unicode string roundtrip");
     WINDOWPLACEMENT restored{};
     check(loaded.windowPlacement(restored), "window placement roundtrip");

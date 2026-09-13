@@ -20,7 +20,18 @@ private:
     CommitMessage,
     Commit,
     Spacer,
-    Summary
+    Summary,
+    Section,
+    Notice,
+    LoadMore
+  };
+  enum class FileListGroup
+  {
+    None,
+    Unstaged,
+    Staged,
+    Outgoing,
+    History
   };
   struct FileListItem
   {
@@ -29,6 +40,9 @@ private:
     size_t commitIndex{};
     size_t added{}, removed{};
     std::wstring label, key;
+    FileListGroup group{FileListGroup::None};
+    const DiffDocument *document{};
+    const Commit *commit{};
   };
   static LRESULT CALLBACK procedure(HWND, UINT, WPARAM, LPARAM);
   LRESULT message(UINT, WPARAM, LPARAM);
@@ -38,11 +52,13 @@ private:
   void refresh(bool seriesSelection = false);
   void loaded();
   void selectFile();
+  void requestSelectedFullFile(const FileListItem &item);
   void updateStatus();
   void rememberFileScroll();
   std::wstring fileScrollKey(const std::wstring &path) const;
   void navigateList(int direction, bool focusDiff = true);
   void toggleCommitMessage();
+  void loadMoreHistory();
   int messageReturnIndex_{-1}, messageReturnTop_{};
   std::vector<FileListItem> fileListItems_;
   void sourceChanged();
@@ -51,6 +67,7 @@ private:
   void previewCommit(int index);
   void endPreview();
   void drawListItem(const DRAWITEMSTRUCT &item);
+  void drawStatus(const DRAWITEMSTRUCT &item) const;
   void drawSplitter(HDC dc) const;
   void moveSplitter(int x);
   static LRESULT CALLBACK comboProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
@@ -58,6 +75,8 @@ private:
   void screenshot();
   void saveSettings();
   void applyTheme();
+  void startStatusAnimation();
+  void stopStatusAnimation();
   std::wstring filePathAt(int index) const;
   static LRESULT CALLBACK filesProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   HWND tooltip_{}, themeButton_{}, fullFileButton_{};
@@ -71,7 +90,7 @@ private:
   HWND hwnd_{}, refresh_{}, source_{}, view_{}, info_{}, baseLabel_{}, base_{}, targetLabel_{}, target_{}, compare_{}, files_{},
     fileLabel_{}, commits_{}, commitLabel_{}, status_{};
   HINSTANCE instance_{};
-  HFONT font_{};
+  HFONT font_{}, boldFont_{};
   UINT dpi_{96};
   std::wstring directory_, selectedPath_, selectedListKey_;
   std::wstring readyBase_, rangeBase_;
@@ -79,6 +98,7 @@ private:
   std::wstring scrollContext_;
   std::wstring automationDirectory_;
   std::unordered_map<std::wstring, int> fileScrollPositions_;
+  std::unordered_map<std::wstring, DiffDocument> fullFileDocuments_;
   std::string pendingResponse_;
   bool pendingClose_{};
   RepositorySnapshot snapshot_;
@@ -98,5 +118,11 @@ private:
   Settings settings_;
   DiffView diff_;
   bool side_{}, fullFile_{}, loading_{}, initialLoad_{true};
+  bool loadMoreLoading_{};
+  bool statusAnimationActive_{};
+  size_t historyInitialLimit_{10}, historyLimit_{10};
+  std::wstring fullFileLoadingKey_;
+  int historyListTop_{}, historyDiffTop_{}, statusAnimationPhase_{};
+  int fileListWheel_{};
 };
 } // namespace gdv

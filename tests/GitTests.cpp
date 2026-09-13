@@ -1,6 +1,7 @@
 #include "app/RepositoryController.h"
 #include "diff/UnifiedDiffParser.h"
 #include "git/GitRepository.h"
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -175,6 +176,14 @@ try
           fullLines.size() > compactLines.size() && fullLines.front().oldLine.value_or(0) == 1 &&
           fullLines.back().oldLine.value_or(0) == 20,
     "full-file mode merges distant changes and includes the first through the last line");
+  CompareRequest selectedContext{dir.wstring(), ChangeSource::Staged, {}, {}};
+  selectedContext.fullFile = true;
+  selectedContext.path = L"staged.txt";
+  selectedContext.selectedOnly = true;
+  auto selectedFullContext = repo.load(selectedContext, cancel);
+  check(selectedFullContext.document.files.size() == 1 && selectedFullContext.document.files[0].path() == L"staged.txt" &&
+          selectedFullContext.commits.empty() && selectedFullContext.commitDocuments.empty(),
+    "selected full-file request loads only its path and no auxiliary commit documents");
   {
     RepositoryController controller(nullptr);
     for (int i = 0; i < 30; ++i)
@@ -199,6 +208,94 @@ try
     check(!controller.takeResult(), "controller shutdown discards active work");
   }
   {
+    auto historyDir = dir / L"history-fixture";
+    fs::create_directory(historyDir);
+    auto historyGit = [&](std::vector<std::wstring> args) {
+      auto result = git.run(historyDir.wstring(), args, cancel);
+      check(result.exitCode == 0, result.err.c_str());
+      return result.out;
+    };
+    auto historyWrite = [&](const wchar_t *name, const std::string &data) {
+      std::ofstream file(historyDir / name, std::ios::binary);
+      file << data;
+    };
+    historyGit({L"init", L"-b", L"main"});
+    historyGit({L"config", L"user.name", L"History Fixture"});
+    historyGit({L"config", L"user.email", L"history@example.invalid"});
+    historyGit({L"config", L"commit.gpgsign", L"false"});
+    historyGit({L"config", L"core.hooksPath", L".no-hooks"});
+    historyWrite(L"history.txt", "base\n");
+    historyGit({L"add", L"."});
+    historyGit({L"commit", L"-m", L"history base"});
+    for (int i = 1; i <= 43; ++i)
+    {
+      historyWrite(L"history.txt", "history " + std::to_string(i) + "\n");
+      historyGit({L"add", L"history.txt"});
+      historyGit({L"commit", L"-m", L"history " + std::to_wstring(i)});
+    }
+    historyGit({L"checkout", L"-b", L"feature"});
+    historyWrite(L"out-one.txt", "one\n");
+    historyGit({L"add", L"."});
+    historyGit({L"commit", L"-m", L"out one", L"-m", L"full first outgoing message"});
+    historyWrite(L"out-two.txt", "two\n");
+    historyGit({L"add", L"."});
+    historyGit({L"commit", L"-m", L"out two"});
+    historyGit({L"branch", L"--set-upstream-to=main"});
+    historyWrite(L"staged.txt", "staged\n");
+    historyGit({L"add", L"staged.txt"});
+    historyWrite(L"history.txt", "unstaged\n");
+    historyWrite(L"untracked.txt", "ignored by diff\n");
+
+    CompareRequest historyRequest{historyDir.wstring(), ChangeSource::History, {}, {}};
+    auto firstPage = repo.load(historyRequest, cancel);
+    check(firstPage.history.unstaged.files.size() == 1 && firstPage.history.unstaged.files[0].path() == L"history.txt" &&
+            firstPage.history.staged.files.size() == 1 && firstPage.history.staged.files[0].path() == L"staged.txt",
+      "history staged and unstaged sections");
+    check(firstPage.history.outgoingCommits.size() == 2 && firstPage.history.outgoingCommits[0].subject == L"out two" &&
+            firstPage.history.outgoingCommits[1].subject == L"out one" && firstPage.history.outgoingDocuments.size() == 2 &&
+            firstPage.history.outgoingCommits[1].message.find(L"full first outgoing message") != std::wstring::npos,
+      "history outgoing commits are newest first with full documents and messages");
+    check(firstPage.history.commits.size() == 10 && firstPage.history.commitDocuments.size() == 10 && firstPage.history.hasMore &&
+            firstPage.history.nextSkip == 12 && firstPage.history.commits.front().subject == L"history 43" &&
+            firstPage.history.commits.back().subject == L"history 34" &&
+            std::none_of(firstPage.history.commits.begin(), firstPage.history.commits.end(),
+              [&](const Commit &commit) {
+                return commit.id == firstPage.history.outgoingCommits[0].id || commit.id == firstPage.history.outgoingCommits[1].id;
+              }),
+      "history first page excludes commits already shown as outgoing");
+
+    auto pinnedHead = firstPage.history.initialHead;
+    historyGit({L"add", L"."});
+    historyGit({L"commit", L"-m", L"external head update"});
+    CompareRequest nextRequest{historyDir.wstring(), ChangeSource::History, {}, {}};
+    nextRequest.historyAppend = true;
+    nextRequest.historyHead = pinnedHead;
+    nextRequest.historySkip = firstPage.history.nextSkip;
+    nextRequest.historyLimit = 10;
+    for (const auto &commit : firstPage.history.outgoingCommits)
+      nextRequest.historyExcludedCommits.push_back(commit.id);
+    auto secondPage = repo.load(nextRequest, cancel);
+    check(secondPage.history.commits.size() == 10 && secondPage.history.commits.front().subject == L"history 33" &&
+            secondPage.history.commits.back().subject == L"history 24" && secondPage.history.hasMore &&
+            secondPage.history.unstaged.files.empty() && secondPage.history.outgoingCommits.empty(),
+      "history next page is pinned and does not reload initial sections");
+    nextRequest.historySkip = 42;
+    auto finalPage = repo.load(nextRequest, cancel);
+    check(finalPage.history.commits.size() == 4 && finalPage.history.commits.front().subject == L"history 3" &&
+            finalPage.history.commits.back().subject == L"history base" && !finalPage.history.hasMore,
+      "history detects its final page");
+
+    historyGit({L"branch", L"--unset-upstream"});
+    historyRequest.historyLimit = 1;
+    auto noUpstream = repo.load(historyRequest, cancel);
+    check(!noUpstream.history.outgoingNotice.empty() && noUpstream.history.commits.size() == 1,
+      "history remains available without upstream");
+    historyGit({L"checkout", L"--detach"});
+    auto detached = repo.load(historyRequest, cancel);
+    check(detached.branch == L"Detached HEAD" && detached.history.commits.size() == 1 && !detached.history.initialHead.empty(),
+      "history supports detached HEAD");
+  }
+  {
     auto unborn = dir / L"unborn";
     fs::create_directory(unborn);
     check(git.run(unborn.wstring(), {L"init", L"-b", L"main"}, cancel).exitCode == 0, "unborn init");
@@ -208,6 +305,10 @@ try
     auto initial = repo.load({unborn.wstring(), ChangeSource::Head, {}, {}}, cancel);
     check(initial.document.files.size() == 1 && initial.document.files[0].hunks[0].lines[0].text == L"working",
       "unborn HEAD includes working tree edits");
+    auto emptyHistory = repo.load({unborn.wstring(), ChangeSource::History, {}, {}}, cancel);
+    check(emptyHistory.history.commits.empty() && !emptyHistory.history.hasMore && emptyHistory.history.initialHead.empty() &&
+            emptyHistory.history.staged.files.size() == 1 && emptyHistory.history.unstaged.files.size() == 1,
+      "history supports a repository without commits");
   }
   {
     auto conflict = dir / L"conflict";

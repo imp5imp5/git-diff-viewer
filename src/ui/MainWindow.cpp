@@ -5,6 +5,7 @@
 #include <dwmapi.h>
 #include <filesystem>
 #include <algorithm>
+#include <iterator>
 #include <commctrl.h>
 #include <shobjidl.h>
 #include <sstream>
@@ -36,6 +37,8 @@ enum
 };
 constexpr int minFilePaneWidth = 220;
 constexpr int minDiffPaneWidth = 300;
+constexpr UINT_PTR automationTimer = 1;
+constexpr UINT_PTR statusAnimationTimer = 2;
 std::wstring getText(HWND h)
 {
   int n = GetWindowTextLengthW(h);
@@ -63,6 +66,8 @@ MainWindow::~MainWindow()
     controller_->shutdown();
   if (font_)
     DeleteObject(font_);
+  if (boldFont_)
+    DeleteObject(boldFont_);
   if (backgroundBrush_)
     DeleteObject(backgroundBrush_);
   if (fieldBrush_)
@@ -75,6 +80,8 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
   automationDirectory_ = std::move(automationDirectory);
   if (automationDirectory_.empty())
     settings_ = Settings::loadUser();
+  historyInitialLimit_ = automationDirectory_.empty() ? std::clamp<size_t>(settings_.number(L"HistoryCommitCount", 10), 1, 1000) : 10;
+  historyLimit_ = historyInitialLimit_;
   side_ = automationDirectory_.empty() && settings_.number(L"SideBySide", 0) != 0;
   darkTheme = !automationDirectory_.empty() || settings_.number(L"DarkTheme", 1) != 0;
   filePaneWidth_ = automationDirectory_.empty() ? static_cast<int>(std::min<DWORD>(settings_.number(L"FilePaneWidth", 0), 4096)) : 0;
@@ -111,7 +118,7 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
   ShowWindow(hwnd_, show == SW_HIDE ? SW_SHOWNORMAL : show);
   UpdateWindow(hwnd_);
   if (!automationDirectory_.empty())
-    SetTimer(hwnd_, 1, 100, nullptr);
+    SetTimer(hwnd_, automationTimer, 100, nullptr);
   ACCEL entries[] = {{FVIRTKEY | FCONTROL, 'R', Refresh}, {FVIRTKEY, VK_F5, Refresh}, {FVIRTKEY | FCONTROL | FSHIFT, 'D', Toggle},
     {FVIRTKEY | FCONTROL | FSHIFT, 'S', Screenshot}, {FVIRTKEY | FCONTROL, VK_OEM_PLUS, ZoomIn},
     {FVIRTKEY | FCONTROL, VK_OEM_MINUS, ZoomOut}, {FVIRTKEY | FCONTROL | FSHIFT, VK_OEM_PLUS, ZoomIn},
@@ -141,8 +148,25 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
         !SendMessageW(commits_, CB_GETDROPPEDSTATE, 0, 0))
     {
       if (!(msg.lParam & (1LL << 30)))
-        toggleCommitMessage();
+      {
+        int index = GetFocus() == files_ ? static_cast<int>(SendMessageW(files_, LB_GETCURSEL, 0, 0)) : -1;
+        if (index >= 0 && static_cast<size_t>(index) < fileListItems_.size() &&
+            fileListItems_[static_cast<size_t>(index)].kind == FileListItemKind::LoadMore)
+          loadMoreHistory();
+        else
+          toggleCommitMessage();
+      }
       continue;
+    }
+    if (msg.message == WM_KEYDOWN && msg.wParam == VK_RETURN && GetFocus() == files_)
+    {
+      int index = static_cast<int>(SendMessageW(files_, LB_GETCURSEL, 0, 0));
+      if (index >= 0 && static_cast<size_t>(index) < fileListItems_.size() &&
+          fileListItems_[static_cast<size_t>(index)].kind == FileListItemKind::LoadMore)
+      {
+        loadMoreHistory();
+        continue;
+      }
     }
     if (!TranslateAcceleratorW(hwnd_, accel, &msg) && !IsDialogMessageW(hwnd_, &msg))
     {
@@ -165,7 +189,8 @@ void MainWindow::createControls()
   source_ = control(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL, Source);
   for (auto name : {L"Staged", L"Unstaged", L"All local · HEAD", L"Ready to push", L"Single commit", L"Commit range"})
     SendMessageW(source_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name));
-  SendMessageW(source_, CB_SETCURSEL, automationDirectory_.empty() ? std::min<DWORD>(5, settings_.number(L"Source", 1)) : 1, 0);
+  SendMessageW(source_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"History"));
+  SendMessageW(source_, CB_SETCURSEL, automationDirectory_.empty() ? std::min<DWORD>(6, settings_.number(L"Source", 1)) : 1, 0);
   view_ = control(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS, View);
   SendMessageW(view_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Unified"));
   SendMessageW(view_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Side-by-side"));
@@ -203,7 +228,7 @@ void MainWindow::createControls()
   tool.lpszText = LPSTR_TEXTCALLBACKW;
   SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
   SendMessageW(tooltip_, TTM_SETMAXTIPWIDTH, 0, 1000);
-  status_ = control(L"STATIC", L"Finding repository…", SS_LEFTNOWORDWRAP, 0);
+  status_ = control(L"STATIC", L"Finding repository…", SS_OWNERDRAW, 0);
   diff_.create(hwnd_, instance_);
   diff_.setSideBySide(side_);
   controller_ = std::make_unique<RepositoryController>(hwnd_);
@@ -235,7 +260,11 @@ void MainWindow::updateFonts()
 {
   if (font_)
     DeleteObject(font_);
+  if (boldFont_)
+    DeleteObject(boldFont_);
   font_ = CreateFontW(-MulDiv(10, static_cast<int>(dpi_), 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+    OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+  boldFont_ = CreateFontW(-MulDiv(10, static_cast<int>(dpi_), 72), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
     OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
   for (HWND child = GetWindow(hwnd_, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT))
     SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
@@ -338,6 +367,7 @@ void MainWindow::moveSplitter(int x)
 void MainWindow::sourceChanged()
 {
   endPreview();
+  loadMoreLoading_ = false;
   if (baseMode_ == ChangeSource::ReadyToPush)
     readyBase_ = getText(base_);
   else if (baseMode_ == ChangeSource::Range)
@@ -361,7 +391,9 @@ void MainWindow::refresh(bool seriesSelection)
                      L"Refresh\nCtrl+Shift+D  Toggle diff layout");
     return;
   }
-  CompareRequest request{directory_, source(source_), getText(base_), getText(target_), fullFile_};
+  CompareRequest request{directory_, source(source_), getText(base_), getText(target_), false};
+  if (request.source == ChangeSource::History)
+    request.historyLimit = historyLimit_;
   if (seriesSelection)
   {
     auto index = SendMessageW(commits_, CB_GETCURSEL, 0, 0);
@@ -372,7 +404,34 @@ void MainWindow::refresh(bool seriesSelection)
     }
   }
   loading_ = true;
+  startStatusAnimation();
   SetWindowTextW(status_, L"Loading Git changes… You can change the source or refresh again.");
+  controller_->request(std::move(request));
+}
+void MainWindow::loadMoreHistory()
+{
+  if (loading_ || source(source_) != ChangeSource::History || !snapshot_.history.hasMore || snapshot_.history.initialHead.empty())
+    return;
+  endPreview();
+  rememberFileScroll();
+  historyListTop_ = static_cast<int>(SendMessageW(files_, LB_GETTOPINDEX, 0, 0));
+  historyDiffTop_ = diff_.topRow();
+  CompareRequest request{directory_, ChangeSource::History, {}, {}, false};
+  request.historyLimit = 10;
+  request.historySkip = snapshot_.history.nextSkip;
+  request.historyHead = snapshot_.history.initialHead;
+  request.historyAppend = true;
+  request.historyExcludedCommits.reserve(snapshot_.history.outgoingCommits.size());
+  for (const auto &commit : snapshot_.history.outgoingCommits)
+    request.historyExcludedCommits.push_back(commit.id);
+  loading_ = true;
+  startStatusAnimation();
+  loadMoreLoading_ = true;
+  for (auto &item : fileListItems_)
+    if (item.kind == FileListItemKind::LoadMore)
+      item.label = L"Loading...";
+  SetWindowTextW(status_, L"Loading more commits...");
+  InvalidateRect(files_, nullptr, FALSE);
   controller_->request(std::move(request));
 }
 void MainWindow::loaded()
@@ -381,14 +440,62 @@ void MainWindow::loaded()
   if (!result)
     return;
   loading_ = false;
+  stopStatusAnimation();
   endPreview();
+  if (result->request.selectedOnly)
+  {
+    if (fullFileLoadingKey_ == result->request.selectionKey)
+      fullFileLoadingKey_.clear();
+    if (!result->error.empty())
+    {
+      SetWindowTextW(status_, (L"Unable to load the full file: " + result->error).c_str());
+      return;
+    }
+    if (result->snapshot.document.files.empty())
+    {
+      SetWindowTextW(status_, L"Git returned no diff for the selected file.");
+      return;
+    }
+    auto document = fullFileDocuments_.insert_or_assign(result->request.selectionKey, std::move(result->snapshot.document)).first;
+    if (fullFile_ && selectedListKey_ == result->request.selectionKey && !document->second.files.empty())
+    {
+      diff_.setFile(&document->second.files.front());
+      auto saved = fileScrollPositions_.find(fileScrollKey(selectedListKey_));
+      if (saved != fileScrollPositions_.end())
+        diff_.scroll(saved->second);
+      else
+        diff_.showFirstChange();
+    }
+    updateStatus();
+    return;
+  }
   bool initial = initialLoad_;
   initialLoad_ = false;
   if (!result->error.empty())
   {
+    if (result->request.historyAppend)
+    {
+      loadMoreLoading_ = false;
+      for (auto &item : fileListItems_)
+        if (item.kind == FileListItemKind::LoadMore)
+          item.label = L"Load more";
+      for (size_t i = 0; i < fileListItems_.size(); ++i)
+        if (fileListItems_[i].key == selectedListKey_)
+        {
+          SendMessageW(files_, LB_SETCURSEL, i, 0);
+          break;
+        }
+      SendMessageW(files_, LB_SETTOPINDEX, historyListTop_, 0);
+      InvalidateRect(files_, nullptr, FALSE);
+      SetWindowTextW(status_, (L"Unable to load more commits: " + result->error).c_str());
+      return;
+    }
     rememberFileScroll();
+    loadMoreLoading_ = false;
     diff_.setMessage(L"Unable to load changes\n\n" + result->error);
     fileListItems_.clear();
+    fullFileDocuments_.clear();
+    fullFileLoadingKey_.clear();
     snapshot_ = {};
     scrollContext_.clear();
     selectedPath_.clear();
@@ -408,9 +515,30 @@ void MainWindow::loaded()
   rememberFileScroll();
   diff_.setFile(nullptr);
   fileListItems_.clear();
-  snapshot_ = std::move(result->snapshot);
-  scrollContext_ = snapshot_.root + L"\n" + std::to_wstring(static_cast<int>(result->request.source)) + L"\n" + result->request.base +
-                   L"\n" + result->request.target + (result->request.fullFile ? L"\nfull" : L"\ncompact");
+  bool historyAppend = result->request.historyAppend;
+  if (!historyAppend)
+  {
+    loadMoreLoading_ = false;
+    fullFileDocuments_.clear();
+    fullFileLoadingKey_.clear();
+  }
+  if (historyAppend)
+  {
+    auto &page = result->snapshot.history;
+    snapshot_.history.commits.insert(snapshot_.history.commits.end(), std::make_move_iterator(page.commits.begin()),
+      std::make_move_iterator(page.commits.end()));
+    snapshot_.history.commitDocuments.insert(snapshot_.history.commitDocuments.end(),
+      std::make_move_iterator(page.commitDocuments.begin()), std::make_move_iterator(page.commitDocuments.end()));
+    snapshot_.history.hasMore = page.hasMore;
+    snapshot_.history.nextSkip = page.nextSkip;
+    historyLimit_ += 10;
+    loadMoreLoading_ = false;
+  }
+  else
+    snapshot_ = std::move(result->snapshot);
+  scrollContext_ = snapshot_.root + L"\n" + std::to_wstring(static_cast<int>(result->request.source));
+  if (result->request.source != ChangeSource::History)
+    scrollContext_ += L"\n" + result->request.base + L"\n" + result->request.target;
   messageReturnIndex_ = -1;
   directory_ = snapshot_.root;
   if (result->request.source == ChangeSource::ReadyToPush)
@@ -458,13 +586,18 @@ void MainWindow::loaded()
     fileListItems_.push_back(std::move(item));
     return index;
   };
-  auto addFile = [&](const FileDiff &file, std::wstring key, size_t commitIndex = 0) {
+  auto addFile = [&](const FileDiff &file, std::wstring key, size_t commitIndex = 0, FileListGroup group = FileListGroup::None,
+                   const DiffDocument *document = nullptr, const Commit *commit = nullptr) {
     std::wstring label(1, statusLetter(file.status));
     label += L"   " + file.path();
     if (file.binary && file.status != FileStatus::Binary)
       label += L"  [binary]";
     auto [added, removed] = changes(file);
-    return addItem({FileListItemKind::File, &file, commitIndex, added, removed, std::move(label), std::move(key)});
+    FileListItem item{FileListItemKind::File, &file, commitIndex, added, removed, std::move(label), std::move(key)};
+    item.group = group;
+    item.document = document;
+    item.commit = commit;
+    return addItem(std::move(item));
   };
   commitMessageFile_ = {};
   if (!snapshot_.commitId.empty())
@@ -476,8 +609,75 @@ void MainWindow::loaded()
       commitMessageFile_.metadata.push_back(line.empty() ? L" " : line);
     fallback = addItem({FileListItemKind::CommitMessage, nullptr, 0, 0, 0, L"<<Commit Message>>", L"message"});
   }
+  bool history = result->request.source == ChangeSource::History;
   bool grouped = result->request.source == ChangeSource::Range || result->request.source == ChangeSource::ReadyToPush;
-  if (grouped)
+  if (history)
+  {
+    auto addSection = [&](const wchar_t *label, const wchar_t *key, FileListGroup group, const DiffDocument *document) {
+      FileListItem item{FileListItemKind::Section, nullptr, 0, 0, 0, label, key};
+      item.group = group;
+      item.document = document;
+      int index = addItem(std::move(item));
+      if (fallback < 0)
+        fallback = index;
+    };
+    auto addSpacer = [&](const wchar_t *key) { addItem({FileListItemKind::Spacer, nullptr, 0, 0, 0, L"", key}); };
+    addSection(L"Unstaged", L"history-section\nunstaged", FileListGroup::Unstaged, &snapshot_.history.unstaged);
+    if (snapshot_.history.unstaged.files.empty())
+      addItem({FileListItemKind::Notice, nullptr, 0, 0, 0, L"No unstaged changes.", L"history-empty-unstaged"});
+    else
+      for (const auto &file : snapshot_.history.unstaged.files)
+        addFile(file, L"history-unstaged\n" + file.path(), 0, FileListGroup::Unstaged, &snapshot_.history.unstaged);
+    addSpacer(L"history-spacer-unstaged");
+
+    addSection(L"Staged", L"history-section\nstaged", FileListGroup::Staged, &snapshot_.history.staged);
+    if (snapshot_.history.staged.files.empty())
+      addItem({FileListItemKind::Notice, nullptr, 0, 0, 0, L"No staged changes.", L"history-empty-staged"});
+    else
+      for (const auto &file : snapshot_.history.staged.files)
+        addFile(file, L"history-staged\n" + file.path(), 0, FileListGroup::Staged, &snapshot_.history.staged);
+    addSpacer(L"history-spacer-staged");
+
+    addSection(L"Ready to push", L"history-section\noutgoing", FileListGroup::Outgoing, &snapshot_.history.outgoing);
+    size_t outgoingCount = std::min(snapshot_.history.outgoingCommits.size(), snapshot_.history.outgoingDocuments.size());
+    if (!outgoingCount)
+      addItem({FileListItemKind::Notice, nullptr, 0, 0, 0,
+        snapshot_.history.outgoingNotice.empty() ? L"No commits ready to push." : snapshot_.history.outgoingNotice,
+        L"history-empty-outgoing"});
+    for (size_t commitIndex = 0; commitIndex < outgoingCount; ++commitIndex)
+    {
+      const auto &commit = snapshot_.history.outgoingCommits[commitIndex];
+      const auto &document = snapshot_.history.outgoingDocuments[commitIndex];
+      FileListItem header{FileListItemKind::Commit, nullptr, commitIndex, 0, 0, commit.id.substr(0, 8) + L"  " + commit.subject,
+        L"outgoing\n" + commit.id};
+      header.group = FileListGroup::Outgoing;
+      header.document = &document;
+      header.commit = &commit;
+      addItem(std::move(header));
+      for (const auto &file : document.files)
+        addFile(file, L"outgoing\n" + commit.id + L"\n" + file.path(), commitIndex, FileListGroup::Outgoing, &document, &commit);
+    }
+    addSpacer(L"history-spacer-outgoing");
+
+    addSection(L"History", L"history-section\ncommits", FileListGroup::History, nullptr);
+    size_t historyCount = std::min(snapshot_.history.commits.size(), snapshot_.history.commitDocuments.size());
+    for (size_t commitIndex = 0; commitIndex < historyCount; ++commitIndex)
+    {
+      const auto &commit = snapshot_.history.commits[commitIndex];
+      const auto &document = snapshot_.history.commitDocuments[commitIndex];
+      FileListItem header{FileListItemKind::Commit, nullptr, commitIndex, 0, 0, commit.id.substr(0, 8) + L"  " + commit.subject,
+        L"history\n" + commit.id};
+      header.group = FileListGroup::History;
+      header.document = &document;
+      header.commit = &commit;
+      addItem(std::move(header));
+      for (const auto &file : document.files)
+        addFile(file, L"history\n" + commit.id + L"\n" + file.path(), commitIndex, FileListGroup::History, &document, &commit);
+    }
+    if (snapshot_.history.hasMore)
+      addItem({FileListItemKind::LoadMore, nullptr, 0, 0, 0, L"Load more", L"history-load-more"});
+  }
+  else if (grouped)
   {
     size_t count = std::min(snapshot_.commits.size(), snapshot_.commitDocuments.size());
     for (size_t commitIndex = 0; commitIndex < count; ++commitIndex)
@@ -533,6 +733,11 @@ void MainWindow::loaded()
       selected = std::max(0, fallback);
     SendMessageW(files_, LB_SETCURSEL, selected, 0);
     selectFile();
+    if (historyAppend)
+    {
+      diff_.scroll(historyDiffTop_);
+      SendMessageW(files_, LB_SETTOPINDEX, historyListTop_, 0);
+    }
   }
   else
   {
@@ -542,7 +747,8 @@ void MainWindow::loaded()
                                                 L"tracked working-tree edits.\nNew untracked files appear after git add."
                                               : snapshot_.notice);
   }
-  updateStatus();
+  if (!loading_)
+    updateStatus();
   layout();
 }
 void MainWindow::navigateList(int direction, bool focusDiff)
@@ -556,10 +762,14 @@ void MainWindow::navigateList(int direction, bool focusDiff)
     current = direction < 0 ? static_cast<int>(fileListItems_.size()) : -1;
   for (int next = current + (direction < 0 ? -1 : 1); next >= 0 && next < static_cast<int>(fileListItems_.size());
        next += direction < 0 ? -1 : 1)
-    if (fileListItems_[static_cast<size_t>(next)].kind != FileListItemKind::Spacer)
+    if (fileListItems_[static_cast<size_t>(next)].kind != FileListItemKind::Spacer &&
+        fileListItems_[static_cast<size_t>(next)].kind != FileListItemKind::Notice)
     {
       SendMessageW(files_, LB_SETCURSEL, next, 0);
-      selectFile();
+      if (fileListItems_[static_cast<size_t>(next)].kind == FileListItemKind::LoadMore)
+        updateStatus();
+      else
+        selectFile();
       return;
     }
 }
@@ -594,11 +804,46 @@ void MainWindow::selectFile()
   if (index < 0 || static_cast<size_t>(index) >= fileListItems_.size())
     return;
   const auto &item = fileListItems_[static_cast<size_t>(index)];
+  if (item.kind == FileListItemKind::LoadMore)
+  {
+    loadMoreHistory();
+    return;
+  }
   if (item.kind == FileListItemKind::Spacer)
   {
-    int summary = std::min(index + 1, static_cast<int>(fileListItems_.size()) - 1);
-    SendMessageW(files_, LB_SETCURSEL, summary, 0);
-    selectFile();
+    auto selectable = [&](int candidate) {
+      auto kind = fileListItems_[static_cast<size_t>(candidate)].kind;
+      return kind != FileListItemKind::Spacer && kind != FileListItemKind::Notice;
+    };
+    int replacement = -1;
+    for (int next = index + 1; next < static_cast<int>(fileListItems_.size()); ++next)
+      if (selectable(next))
+      {
+        replacement = next;
+        break;
+      }
+    for (int previous = index - 1; replacement < 0 && previous >= 0; --previous)
+      if (selectable(previous))
+      {
+        replacement = previous;
+        break;
+      }
+    if (replacement >= 0)
+    {
+      SendMessageW(files_, LB_SETCURSEL, replacement, 0);
+      selectFile();
+    }
+    return;
+  }
+  if (item.kind == FileListItemKind::Notice)
+  {
+    for (int previous = index - 1; previous >= 0; --previous)
+      if (fileListItems_[static_cast<size_t>(previous)].kind == FileListItemKind::Section)
+      {
+        SendMessageW(files_, LB_SETCURSEL, previous, 0);
+        selectFile();
+        break;
+      }
     return;
   }
   selectedListKey_ = item.key;
@@ -611,7 +856,7 @@ void MainWindow::selectFile()
   }
   if (item.kind == FileListItemKind::Commit)
   {
-    const auto &commit = snapshot_.commits[item.commitIndex];
+    const auto &commit = item.commit ? *item.commit : snapshot_.commits[item.commitIndex];
     selectedPath_ = L"<<Commit Message>>";
     listMessageFile_ = {};
     listMessageFile_.newPath = L"<<Commit Message>> - " + commit.id.substr(0, 8);
@@ -619,6 +864,63 @@ void MainWindow::selectFile()
     std::wstring line;
     while (std::getline(message, line))
       listMessageFile_.metadata.push_back(line.empty() ? L" " : line);
+    diff_.setFile(&listMessageFile_, false, true);
+    return;
+  }
+  if (item.kind == FileListItemKind::Section)
+  {
+    selectedPath_ = L"<<" + item.label + L">>";
+    listMessageFile_ = {};
+    listMessageFile_.newPath = selectedPath_;
+    listMessageFile_.metadata = {item.label, L" "};
+    const auto *document = item.document;
+    if (document && !document->files.empty())
+    {
+      size_t added = 0, removed = 0;
+      for (const auto &file : document->files)
+      {
+        auto counts = changes(file);
+        added += counts.first;
+        removed += counts.second;
+      }
+      listMessageFile_.metadata.push_back(std::to_wstring(document->files.size()) + L" files changed, +" + std::to_wstring(added) +
+                                          L", -" + std::to_wstring(removed) + L".");
+    }
+    else if (item.group == FileListGroup::Unstaged)
+      listMessageFile_.metadata.push_back(L"No unstaged changes.");
+    else if (item.group == FileListGroup::Staged)
+      listMessageFile_.metadata.push_back(L"No staged changes.");
+    else if (item.group == FileListGroup::History)
+      listMessageFile_.metadata.push_back(snapshot_.history.commits.empty()
+                                            ? L"No commits in history."
+                                            : std::to_wstring(snapshot_.history.commits.size()) + L" commits loaded, newest first.");
+    else if (!snapshot_.history.outgoingNotice.empty())
+      listMessageFile_.metadata.push_back(snapshot_.history.outgoingNotice);
+    else
+      listMessageFile_.metadata.push_back(L"No commits ready to push.");
+    const std::vector<Commit> *sectionCommits = nullptr;
+    if (item.group == FileListGroup::Outgoing)
+      sectionCommits = &snapshot_.history.outgoingCommits;
+    else if (item.group == FileListGroup::History)
+      sectionCommits = &snapshot_.history.commits;
+    if (sectionCommits && !sectionCommits->empty())
+    {
+      listMessageFile_.metadata.insert(listMessageFile_.metadata.end(), {L" ", L"Commits:"});
+      for (size_t commitIndex = 0; commitIndex < sectionCommits->size(); ++commitIndex)
+      {
+        if (commitIndex)
+        {
+          listMessageFile_.metadata.push_back(L" ");
+          listMessageFile_.metadata.push_back(std::wstring(80, L'_'));
+        }
+        listMessageFile_.metadata.push_back(L" ");
+        const auto &commit = (*sectionCommits)[commitIndex];
+        std::wistringstream message(commit.message);
+        std::wstring line;
+        while (std::getline(message, line))
+          listMessageFile_.metadata.push_back(line.empty() ? L" " : line);
+      }
+    }
     diff_.setFile(&listMessageFile_, false, true);
     return;
   }
@@ -636,13 +938,66 @@ void MainWindow::selectFile()
   if (item.file)
   {
     selectedPath_ = item.file->path();
-    diff_.setFile(item.file);
+    const FileDiff *file = item.file;
+    if (fullFile_)
+    {
+      auto cached = fullFileDocuments_.find(selectedListKey_);
+      if (cached != fullFileDocuments_.end() && !cached->second.files.empty())
+        file = &cached->second.files.front();
+    }
+    diff_.setFile(file);
     auto saved = fileScrollPositions_.find(fileScrollKey(selectedListKey_));
     if (saved != fileScrollPositions_.end())
       diff_.scroll(saved->second);
-    else if (fullFile_)
+    else if (fullFile_ && file != item.file)
       diff_.showFirstChange();
+    if (fullFile_ && file == item.file)
+      requestSelectedFullFile(item);
   }
+}
+void MainWindow::requestSelectedFullFile(const FileListItem &item)
+{
+  if (!item.file || item.key.empty())
+    return;
+  CompareRequest request{directory_, source(source_), getText(base_), getText(target_), true};
+  request.path = item.file->path();
+  request.selectionKey = item.key;
+  request.selectedOnly = true;
+  if (!snapshot_.commitId.empty())
+  {
+    request.source = ChangeSource::Commit;
+    request.base.clear();
+    request.target = snapshot_.commitId;
+  }
+  else if (item.group == FileListGroup::Unstaged)
+  {
+    request.source = ChangeSource::Unstaged;
+    request.base.clear();
+    request.target.clear();
+  }
+  else if (item.group == FileListGroup::Staged)
+  {
+    request.source = ChangeSource::Staged;
+    request.base.clear();
+    request.target.clear();
+  }
+  else if ((item.group == FileListGroup::Outgoing || item.group == FileListGroup::History) && item.commit)
+  {
+    request.source = ChangeSource::Commit;
+    request.base.clear();
+    request.target = item.commit->id;
+  }
+  else if (item.key.rfind(L"commit\n", 0) == 0 && item.commitIndex < snapshot_.commits.size())
+  {
+    request.source = ChangeSource::Commit;
+    request.base.clear();
+    request.target = snapshot_.commits[item.commitIndex].id;
+  }
+  fullFileLoadingKey_ = item.key;
+  loading_ = true;
+  startStatusAnimation();
+  SetWindowTextW(status_, L"Loading the selected full file...");
+  controller_->request(std::move(request));
 }
 void MainWindow::updateStatus()
 {
@@ -651,9 +1006,11 @@ void MainWindow::updateStatus()
   if (index >= 0 && static_cast<size_t>(index) < fileListItems_.size())
   {
     const auto &item = fileListItems_[static_cast<size_t>(index)];
+    if (item.document)
+      document = item.document;
     bool commitItem =
       item.kind == FileListItemKind::Commit || (item.kind == FileListItemKind::File && item.key.rfind(L"commit\n", 0) == 0);
-    if (commitItem && item.commitIndex < snapshot_.commitDocuments.size())
+    if (!item.document && commitItem && item.commitIndex < snapshot_.commitDocuments.size())
       document = &snapshot_.commitDocuments[item.commitIndex];
   }
   size_t added = 0, removed = 0;
@@ -674,10 +1031,14 @@ void MainWindow::updateStatus()
 }
 void MainWindow::rememberFileScroll()
 {
-  if (!scrollContext_.empty() && !selectedListKey_.empty() && diff_.file() && !diff_.plainText())
+  if (!scrollContext_.empty() && !selectedListKey_.empty() && diff_.file() && !diff_.plainText() &&
+      (!fullFile_ || fullFileLoadingKey_ != selectedListKey_))
     fileScrollPositions_[fileScrollKey(selectedListKey_)] = diff_.topRow();
 }
-std::wstring MainWindow::fileScrollKey(const std::wstring &path) const { return scrollContext_ + L"\n" + path; }
+std::wstring MainWindow::fileScrollKey(const std::wstring &path) const
+{
+  return scrollContext_ + (fullFile_ ? L"\nfull\n" : L"\ncompact\n") + path;
+}
 void MainWindow::toggle()
 {
   side_ = !side_;
@@ -686,9 +1047,14 @@ void MainWindow::toggle()
 }
 void MainWindow::toggleFullFile()
 {
-  fullFile_ = SendMessageW(fullFileButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+  bool enabled = SendMessageW(fullFileButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+  if (enabled == fullFile_)
+    return;
+  rememberFileScroll();
+  diff_.setFile(nullptr);
+  fullFile_ = enabled;
   diff_.setChangeMinimap(fullFile_);
-  refresh();
+  selectFile();
 }
 void MainWindow::previewCommit(int index)
 {
@@ -830,13 +1196,42 @@ void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
       SendMessageW(item.hwndItem, combo ? CB_GETLBTEXT : LB_GETTEXT, item.itemID, reinterpret_cast<LPARAM>(value.data()));
       value.resize(static_cast<size_t>(length));
       int pad = MulDiv(6, static_cast<int>(dpi_), 96);
+      if (listItem && listItem->kind == FileListItemKind::LoadMore)
+      {
+        if (loadMoreLoading_)
+          value = L"Loading...";
+        RECT button = item.rcItem;
+        InflateRect(&button, -MulDiv(12, static_cast<int>(dpi_), 96), -MulDiv(2, static_cast<int>(dpi_), 96));
+        auto buttonBrush = CreateSolidBrush(themeColor(selected ? ThemeColor::ListSelection : ThemeColor::Metadata));
+        FillRect(item.hDC, &button, buttonBrush);
+        DeleteObject(buttonBrush);
+        auto border = CreateSolidBrush(themeColor(ThemeColor::Border));
+        FrameRect(item.hDC, &button, border);
+        DeleteObject(border);
+        DrawTextW(item.hDC, value.c_str(), static_cast<int>(value.size()), &button, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        if (item.itemState & ODS_FOCUS)
+        {
+          InflateRect(&button, -2, -2);
+          DrawFocusRect(item.hDC, &button);
+        }
+        RestoreDC(item.hDC, saved);
+        return;
+      }
       RECT textRect = item.rcItem;
       textRect.left += pad;
       textRect.right -= pad;
+      if (listItem && listItem->kind == FileListItemKind::Notice)
+      {
+        textRect.left += MulDiv(18, static_cast<int>(dpi_), 96);
+        SetTextColor(item.hDC, themeColor(selected ? ThemeColor::SelectionText : ThemeColor::MutedText));
+      }
       bool commitHeader = listItem && listItem->kind == FileListItemKind::Commit;
-      bool sectionHeader = commitHeader || (listItem && listItem->kind == FileListItemKind::Summary);
+      bool groupHeader = listItem && (listItem->kind == FileListItemKind::Summary || listItem->kind == FileListItemKind::Section);
+      bool sectionHeader = commitHeader || groupHeader;
       if (sectionHeader)
       {
+        if (groupHeader)
+          SelectObject(item.hDC, boldFont_ ? boldFont_ : font_);
         RECT separator{textRect.left, item.rcItem.top, textRect.right, item.rcItem.top + 1};
         auto brush = CreateSolidBrush(themeColor(ThemeColor::Border));
         FillRect(item.hDC, &separator, brush);
@@ -914,6 +1309,51 @@ void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
   RestoreDC(item.hDC, saved);
 }
 
+void MainWindow::drawStatus(const DRAWITEMSTRUCT &item) const
+{
+  RECT area = item.rcItem;
+  auto background = CreateSolidBrush(themeColor(ThemeColor::Window));
+  FillRect(item.hDC, &area, background);
+  DeleteObject(background);
+  if (statusAnimationActive_)
+  {
+    int areaWidth = static_cast<int>(area.right - area.left);
+    int width = std::max(MulDiv(90, static_cast<int>(dpi_), 96), areaWidth / 6);
+    int travel = std::max(1, areaWidth + width);
+    int left = area.left - width + (statusAnimationPhase_ * MulDiv(14, static_cast<int>(dpi_), 96)) % travel;
+    RECT highlight{left, area.top, left + width, area.bottom};
+    auto base = themeColor(ThemeColor::Window), accent = themeColor(ThemeColor::ListSelection);
+    auto blend = [](BYTE first, BYTE second) { return static_cast<BYTE>((first + second) / 2); };
+    auto color = RGB(blend(GetRValue(base), GetRValue(accent)), blend(GetGValue(base), GetGValue(accent)),
+      blend(GetBValue(base), GetBValue(accent)));
+    auto brush = CreateSolidBrush(color);
+    FillRect(item.hDC, &highlight, brush);
+    DeleteObject(brush);
+  }
+  SetBkMode(item.hDC, TRANSPARENT);
+  SetTextColor(item.hDC, themeColor(ThemeColor::Text));
+  SelectObject(item.hDC, font_);
+  area.left += MulDiv(2, static_cast<int>(dpi_), 96);
+  auto text = getText(status_);
+  DrawTextW(item.hDC, text.c_str(), static_cast<int>(text.size()), &area,
+    DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+}
+
+void MainWindow::startStatusAnimation()
+{
+  statusAnimationActive_ = true;
+  statusAnimationPhase_ = 0;
+  SetTimer(hwnd_, statusAnimationTimer, 50, nullptr);
+  InvalidateRect(status_, nullptr, FALSE);
+}
+
+void MainWindow::stopStatusAnimation()
+{
+  statusAnimationActive_ = false;
+  KillTimer(hwnd_, statusAnimationTimer);
+  InvalidateRect(status_, nullptr, FALSE);
+}
+
 void MainWindow::saveSettings()
 {
   if (!automationDirectory_.empty())
@@ -923,6 +1363,7 @@ void MainWindow::saveSettings()
   settings_.setNumber(L"FontSize", diff_.fontSize());
   settings_.setNumber(L"DarkTheme", darkTheme);
   settings_.setNumber(L"FilePaneWidth", static_cast<DWORD>(filePaneWidth_));
+  settings_.setNumber(L"HistoryCommitCount", static_cast<DWORD>(historyInitialLimit_));
   if (source(source_) == ChangeSource::ReadyToPush)
     readyBase_ = getText(base_);
   else if (source(source_) == ChangeSource::Range)
@@ -987,10 +1428,57 @@ std::wstring MainWindow::filePathAt(int index) const
 LRESULT CALLBACK MainWindow::filesProcedure(HWND hwnd, UINT msg, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data)
 {
   auto self = reinterpret_cast<MainWindow *>(data);
+  if (msg == WM_MOUSEWHEEL)
+  {
+    int delta = GET_WHEEL_DELTA_WPARAM(w);
+    MSG queued{};
+    while (PeekMessageW(&queued, hwnd, WM_MOUSEWHEEL, WM_MOUSEWHEEL, PM_REMOVE))
+      delta += GET_WHEEL_DELTA_WPARAM(queued.wParam);
+    self->fileListWheel_ += delta;
+    int detents = self->fileListWheel_ / WHEEL_DELTA;
+    self->fileListWheel_ %= WHEEL_DELTA;
+    if (detents)
+    {
+      UINT wheelLines = 3;
+      SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &wheelLines, 0);
+      RECT area{};
+      GetClientRect(hwnd, &area);
+      int itemHeight = std::max(1, static_cast<int>(SendMessageW(hwnd, LB_GETITEMHEIGHT, 0, 0)));
+      int page = std::max(1, static_cast<int>(area.bottom - area.top) / itemHeight);
+      int step = wheelLines == WHEEL_PAGESCROLL ? page : static_cast<int>(wheelLines);
+      int count = static_cast<int>(SendMessageW(hwnd, LB_GETCOUNT, 0, 0));
+      int top = static_cast<int>(SendMessageW(hwnd, LB_GETTOPINDEX, 0, 0));
+      if (step > 0)
+        SendMessageW(hwnd, LB_SETTOPINDEX, std::clamp(top - detents * step, 0, std::max(0, count - page)), 0);
+    }
+    self->tooltipIndex_ = -1;
+    SendMessageW(self->tooltip_, TTM_POP, 0, 0);
+    return 0;
+  }
   if (msg == WM_KEYDOWN && (w == VK_UP || w == VK_DOWN))
   {
     self->navigateList(w == VK_UP ? -1 : 1, false);
     return 0;
+  }
+  if (msg == WM_KEYDOWN && (w == VK_RETURN || w == VK_SPACE))
+  {
+    int index = static_cast<int>(SendMessageW(hwnd, LB_GETCURSEL, 0, 0));
+    if (index >= 0 && static_cast<size_t>(index) < self->fileListItems_.size() &&
+        self->fileListItems_[static_cast<size_t>(index)].kind == FileListItemKind::LoadMore)
+    {
+      self->loadMoreHistory();
+      return 0;
+    }
+  }
+  if (msg == WM_LBUTTONUP)
+  {
+    auto result = DefSubclassProc(hwnd, msg, w, l);
+    auto hit = SendMessageW(hwnd, LB_ITEMFROMPOINT, 0, l);
+    int index = HIWORD(hit) ? -1 : LOWORD(hit);
+    if (index >= 0 && static_cast<size_t>(index) < self->fileListItems_.size() &&
+        self->fileListItems_[static_cast<size_t>(index)].kind == FileListItemKind::LoadMore)
+      self->loadMoreHistory();
+    return result;
   }
   if (msg == WM_MOUSEMOVE)
   {
@@ -1202,10 +1690,20 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
       item->itemHeight = MulDiv(24, static_cast<int>(dpi_), 96);
       return TRUE;
     }
-    case WM_DRAWITEM: drawListItem(*reinterpret_cast<DRAWITEMSTRUCT *>(l)); return TRUE;
+    case WM_DRAWITEM:
+      if (reinterpret_cast<DRAWITEMSTRUCT *>(l)->hwndItem == status_)
+        drawStatus(*reinterpret_cast<DRAWITEMSTRUCT *>(l));
+      else
+        drawListItem(*reinterpret_cast<DRAWITEMSTRUCT *>(l));
+      return TRUE;
     case WM_TIMER:
-      if (w == 1)
+      if (w == automationTimer)
         automationTick();
+      else if (w == statusAnimationTimer && statusAnimationActive_)
+      {
+        ++statusAnimationPhase_;
+        InvalidateRect(status_, nullptr, FALSE);
+      }
       return 0;
     case WM_PRINTCLIENT:
     {

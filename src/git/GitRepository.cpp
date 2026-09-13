@@ -1,6 +1,8 @@
 #include "GitRepository.h"
 #include "diff/UnifiedDiffParser.h"
+#include <algorithm>
 #include <stdexcept>
+#include <unordered_set>
 namespace gdv
 {
 namespace
@@ -62,11 +64,15 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
       throw std::runtime_error("Enter a commit or branch in the comparison fields, then click Compare.");
     return trim(run({L"rev-parse", L"--verify", L"--end-of-options", ref + L"^{commit}"}).out);
   };
-  auto commits = [&](const std::wstring &range, bool reverse = false) {
+  auto commits = [&](const std::wstring &range, bool reverse = false, size_t skip = 0, size_t limit = 0) {
     std::vector<std::wstring> logArgs = {
       L"log", L"--encoding=UTF-8", L"--format=%H%x00%s%x00%an%x00%H%nAuthor: %an <%ae>%nDate: %aI%n%n%B%x00"};
     if (reverse)
       logArgs.push_back(L"--reverse");
+    if (skip)
+      logArgs.push_back(L"--skip=" + std::to_wstring(skip));
+    if (limit)
+      logArgs.push_back(L"-n" + std::to_wstring(limit));
     logArgs.insert(logArgs.end(), {range, L"--"});
     return parseCommits(run(logArgs).out);
   };
@@ -83,6 +89,19 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
       commitArgs.insert(commitArgs.end(), {L"--format=", L"--root", L"--first-parent", commit.id, L"--"});
       snapshot.commitDocuments.push_back(UnifiedDiffParser{}.parse(run(commitArgs).out));
     }
+  };
+  auto commitDocument = [&](const Commit &commit) {
+    auto commitArgs = args;
+    commitArgs[0] = L"show";
+    commitArgs.insert(commitArgs.end(), {L"--format=", L"--root", L"--first-parent", commit.id, L"--"});
+    return UnifiedDiffParser{}.parse(run(commitArgs).out);
+  };
+  auto diffDocument = [&](bool staged) {
+    auto diffArgs = args;
+    if (staged)
+      diffArgs.push_back(L"--cached");
+    diffArgs.push_back(L"--");
+    return UnifiedDiffParser{}.parse(run(diffArgs).out);
   };
   switch (request.source)
   {
@@ -116,8 +135,11 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
       }
       auto baseId = resolve(base), head = resolve(L"HEAD");
       snapshot.base = base;
-      snapshot.commits = commits(baseId + L".." + head, true);
-      loadCommitDocuments();
+      if (!request.selectedOnly)
+      {
+        snapshot.commits = commits(baseId + L".." + head, true);
+        loadCommitDocuments();
+      }
       args.push_back(baseId + L"..." + head);
       break;
     }
@@ -125,8 +147,9 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
     {
       auto id = resolve(request.target);
       snapshot.commitId = id;
-      snapshot.commitMessage =
-        trim(run({L"log", L"-1", L"--encoding=UTF-8", L"--format=%H%nAuthor: %an <%ae>%nDate: %aI%n%n%B", id, L"--"}).out);
+      if (!request.selectedOnly)
+        snapshot.commitMessage =
+          trim(run({L"log", L"-1", L"--encoding=UTF-8", L"--format=%H%nAuthor: %an <%ae>%nDate: %aI%n%n%B", id, L"--"}).out);
       args[0] = L"show";
       args.insert(args.end(), {L"--format=", L"--root", L"--first-parent", id});
       snapshot.base = L"Commit " + request.target;
@@ -135,15 +158,87 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
     case ChangeSource::Range:
     {
       auto base = resolve(request.base), target = resolve(request.target);
-      snapshot.commits = commits(base + L".." + target, true);
-      loadCommitDocuments();
+      if (!request.selectedOnly)
+      {
+        snapshot.commits = commits(base + L".." + target, true);
+        loadCommitDocuments();
+      }
       args.push_back(base);
       args.push_back(target);
       snapshot.base = request.base + L" .. " + request.target;
       break;
     }
+    case ChangeSource::History:
+    {
+      snapshot.base = L"History";
+      auto headResult = run({L"rev-parse", L"--verify", L"HEAD"}, true);
+      std::wstring currentHead = headResult.exitCode ? L"" : trim(headResult.out);
+      std::wstring historyHead = request.historyAppend ? request.historyHead : currentHead;
+      snapshot.history.initialHead = historyHead;
+
+      if (!request.historyAppend)
+      {
+        snapshot.history.unstaged = diffDocument(false);
+        snapshot.history.staged = diffDocument(true);
+        if (snapshot.upstream.empty())
+          snapshot.history.outgoingNotice = L"No upstream configured.";
+        else if (!currentHead.empty())
+        {
+          auto upstream = resolve(snapshot.upstream);
+          snapshot.history.outgoingCommits = commits(upstream + L".." + currentHead);
+          auto outgoingArgs = args;
+          outgoingArgs.push_back(upstream + L"..." + currentHead);
+          outgoingArgs.push_back(L"--");
+          snapshot.history.outgoing = UnifiedDiffParser{}.parse(run(outgoingArgs).out);
+          snapshot.history.outgoingDocuments.reserve(snapshot.history.outgoingCommits.size());
+          for (const auto &commit : snapshot.history.outgoingCommits)
+            snapshot.history.outgoingDocuments.push_back(commitDocument(commit));
+        }
+      }
+
+      if (!historyHead.empty())
+      {
+        size_t count = std::max<size_t>(1, request.historyLimit);
+        std::unordered_set<std::wstring> excluded(request.historyExcludedCommits.begin(), request.historyExcludedCommits.end());
+        if (!request.historyAppend)
+          for (const auto &commit : snapshot.history.outgoingCommits)
+            excluded.insert(commit.id);
+        size_t rawSkip = request.historySkip;
+        size_t nextSkip = rawSkip;
+        const size_t batchSize = std::max<size_t>(64, count + excluded.size() + 1);
+        while (snapshot.history.commits.size() <= count)
+        {
+          auto page = commits(historyHead, false, rawSkip, batchSize);
+          if (page.empty())
+            break;
+          for (auto &commit : page)
+          {
+            ++rawSkip;
+            if (excluded.find(commit.id) != excluded.end())
+              continue;
+            snapshot.history.commits.push_back(std::move(commit));
+            if (snapshot.history.commits.size() == count)
+              nextSkip = rawSkip;
+            if (snapshot.history.commits.size() > count)
+              break;
+          }
+          if (snapshot.history.commits.size() > count || page.size() < batchSize)
+            break;
+        }
+        snapshot.history.hasMore = snapshot.history.commits.size() > count;
+        if (snapshot.history.hasMore)
+          snapshot.history.commits.resize(count);
+        snapshot.history.nextSkip = snapshot.history.commits.size() == count ? nextSkip : rawSkip;
+        snapshot.history.commitDocuments.reserve(snapshot.history.commits.size());
+        for (const auto &commit : snapshot.history.commits)
+          snapshot.history.commitDocuments.push_back(commitDocument(commit));
+      }
+      return snapshot;
+    }
   }
   args.push_back(L"--");
+  if (!request.path.empty())
+    args.push_back(request.path);
   snapshot.document = UnifiedDiffParser{}.parse(run(args).out);
   if (!snapshot.document.warnings.empty())
     snapshot.notice = snapshot.document.warnings.front();
