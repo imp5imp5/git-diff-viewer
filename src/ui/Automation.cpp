@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <stdexcept>
 namespace gdv
@@ -164,7 +165,24 @@ std::string MainWindow::stateJson() const
     if (!first)
       out += ',';
     first = false;
-    out += "{\"id\":" + json(c.first) + ",\"text\":" + json(label(c.second)) +
+    bool toolbarButton = c.second == refresh_ || c.second == view_ || c.second == fullFileButton_ || c.second == themeButton_ ||
+                         c.second == layoutButton_ || c.second == copyCommentsButton_ || c.second == compare_;
+    std::wstring hint;
+    if (toolbarButton)
+    {
+      wchar_t buffer[512]{};
+      TOOLINFOW tool{sizeof(tool)};
+      tool.uFlags = TTF_IDISHWND;
+      tool.hwnd = hwnd_;
+      tool.uId = reinterpret_cast<UINT_PTR>(c.second);
+      tool.lpszText = buffer;
+      SendMessageW(tooltip_, TTM_GETTEXTW, std::size(buffer), reinterpret_cast<LPARAM>(&tool));
+      hint = buffer;
+    }
+    bool checked = (c.second == view_ || c.second == fullFileButton_ || c.second == layoutButton_) &&
+                   SendMessageW(c.second, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    out += "{\"id\":" + json(c.first) + ",\"text\":" + json(label(c.second)) + ",\"hint\":" + json(hint) +
+           ",\"checked\":" + (checked ? "true" : "false") +
            ",\"visible\":" + ((GetWindowLongPtrW(c.second, GWL_STYLE) & WS_VISIBLE) ? "true" : "false") +
            ",\"focused\":" + (GetFocus() == c.second ? "true" : "false") +
            ",\"enabled\":" + (IsWindowEnabled(c.second) ? "true" : "false") + ",\"x\":" + std::to_string(bounds.left) +

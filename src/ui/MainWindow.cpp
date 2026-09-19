@@ -231,9 +231,8 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
         !(GetKeyState(VK_MENU) & 0x8000))
     {
       auto focus = GetFocus();
-      bool editing = focus == base_ || focus == target_ || focus == source_ || focus == view_ || focus == commits_;
-      bool dropdown = SendMessageW(source_, CB_GETDROPPEDSTATE, 0, 0) || SendMessageW(view_, CB_GETDROPPEDSTATE, 0, 0) ||
-                      SendMessageW(commits_, CB_GETDROPPEDSTATE, 0, 0);
+      bool editing = focus == base_ || focus == target_ || focus == source_ || focus == commits_;
+      bool dropdown = SendMessageW(source_, CB_GETDROPPEDSTATE, 0, 0) || SendMessageW(commits_, CB_GETDROPPEDSTATE, 0, 0);
       if (!editing && !dropdown)
       {
         SendMessageW(fullFileButton_, BM_CLICK, 0, 0);
@@ -288,14 +287,12 @@ void MainWindow::createControls()
     SendMessageW(source_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name));
   SendMessageW(source_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"History"));
   SendMessageW(source_, CB_SETCURSEL, automationDirectory_.empty() ? std::min<DWORD>(6, settings_.number(L"Source", 1)) : 1, 0);
-  view_ = control(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS, View);
-  SendMessageW(view_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Unified"));
-  SendMessageW(view_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Side-by-side"));
-  SendMessageW(view_, CB_SETCURSEL, side_ ? 1 : 0, 0);
+  view_ = control(L"BUTTON", L"Side-by-side", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE, View);
+  SendMessageW(view_, BM_SETCHECK, side_ ? BST_CHECKED : BST_UNCHECKED, 0);
   fullFileButton_ = control(L"BUTTON", L"Full file", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE, FullFile);
-  themeButton_ = control(L"BUTTON", L"Light theme", WS_TABSTOP, Theme);
+  themeButton_ = control(L"BUTTON", L"\u25D0", WS_TABSTOP, Theme);
   layoutButton_ = control(L"BUTTON", L"Wide Diff", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE, ExplorerLayout);
-  copyCommentsButton_ = control(L"BUTTON", L"Copy comments", WS_TABSTOP, CopyComments);
+  copyCommentsButton_ = control(L"BUTTON", L"\u29C9", WS_TABSTOP, CopyComments);
   EnableWindow(copyCommentsButton_, FALSE);
   SendMessageW(layoutButton_, BM_SETCHECK, explorerLayout_ ? BST_CHECKED : BST_UNCHECKED, 0);
   baseLabel_ = control(L"STATIC", L"Base branch / ref", 0, 0);
@@ -305,7 +302,7 @@ void MainWindow::createControls()
   compare_ = control(L"BUTTON", L"Compare", WS_TABSTOP, Compare);
   commitLabel_ = control(L"STATIC", L"LOCAL COMMITS", 0, 0);
   commits_ = control(WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_TABSTOP | WS_VSCROLL, Commits);
-  for (HWND combo : {source_, view_, commits_})
+  for (HWND combo : {source_, commits_})
     SetWindowSubclass(combo, comboProcedure, 1, reinterpret_cast<DWORD_PTR>(this));
   COMBOBOXINFO comboInfo{sizeof(comboInfo)};
   if (GetComboBoxInfo(commits_, &comboInfo))
@@ -346,6 +343,20 @@ void MainWindow::createControls()
   tool.uId = reinterpret_cast<UINT_PTR>(info_);
   tool.lpszText = LPSTR_TEXTCALLBACKW;
   SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
+  const std::pair<HWND, const wchar_t *> buttonHints[] = {
+    {refresh_, L"Reload Git changes and clear review comments.\nHotkeys: F5 or Ctrl+R."},
+    {view_, L"Switch between side-by-side and unified diffs.\nHotkey: Ctrl+Shift+D."},
+    {fullFileButton_, L"Show the complete selected file or only changed hunks.\nHotkey: F (outside text fields)."},
+    {themeButton_, L"Switch between dark and light themes.\nHotkey: none."},
+    {layoutButton_, L"Show Commits, Files and Commit message above a full-width diff, or return to classic layout.\nHotkey: none."},
+    {copyCommentsButton_, L"Copy all review comments to the clipboard.\nHotkey: F2."},
+    {compare_, L"Compare the entered base and target refs.\nHotkey: none."}};
+  for (const auto &[button, hint] : buttonHints)
+  {
+    tool.uId = reinterpret_cast<UINT_PTR>(button);
+    tool.lpszText = const_cast<wchar_t *>(hint);
+    SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
+  }
   SendMessageW(tooltip_, TTM_SETMAXTIPWIDTH, 0, 1000);
   status_ = control(L"STATIC", L"Finding repository…", SS_OWNERDRAW, 0);
   diff_.create(hwnd_, instance_);
@@ -398,7 +409,7 @@ void MainWindow::updateFonts()
   // Native themed buttons have a one-pixel transparent inset. Match the visible
   // borders, not just the HWND rectangles, while accounting for the combo frame.
   const int toolbarHeight = MulDiv(30, static_cast<int>(dpi_), 96) - 2 * MulDiv(1, static_cast<int>(dpi_), 96);
-  for (HWND combo : {source_, view_, commits_})
+  for (HWND combo : {source_, commits_})
   {
     RECT bounds{};
     GetWindowRect(combo, &bounds);
@@ -421,27 +432,29 @@ void MainWindow::layout()
                                 : std::clamp(width / 4, scale(minFilePaneWidth), scale(380));
   int footerHeight = scale(36);
   auto move = [&](HWND h, int x, int y, int w, int ht) { MoveWindow(h, x, y, std::max(1, w), std::max(1, ht), TRUE); };
-  move(refresh_, pad, pad, scale(80), row);
-  move(source_, pad + scale(92), pad + scale(1), scale(180), scale(240));
-  move(view_, pad + scale(284), pad + scale(1), scale(145), scale(160));
-  move(fullFileButton_, pad + scale(441), pad, scale(100), row);
-  move(themeButton_, pad + scale(553), pad, scale(115), row);
-  move(layoutButton_, pad + scale(680), pad, scale(90), row);
-  bool compactToolbar = width < scale(1120);
+  int toolbarX = pad;
+  move(refresh_, toolbarX, pad, scale(80), row);
+  toolbarX += scale(92);
+  move(source_, toolbarX, pad + scale(1), scale(180), scale(240));
+  toolbarX += scale(192);
+  move(view_, toolbarX, pad, scale(125), row);
+  toolbarX += scale(137);
+  move(fullFileButton_, toolbarX, pad, scale(100), row);
+  toolbarX += scale(112);
+  move(themeButton_, toolbarX, pad, row, row);
+  toolbarX += scale(42);
+  move(layoutButton_, toolbarX, pad, scale(90), row);
+  toolbarX += scale(102);
+  move(copyCommentsButton_, toolbarX, pad, row, row);
+  toolbarX += scale(42);
   int y = pad + row + gap;
-  if (compactToolbar)
+  if (width < toolbarX + scale(220))
   {
-    move(copyCommentsButton_, pad, y, scale(150), row);
-    int infoX = pad + scale(162);
-    move(info_, infoX, y, width - infoX - pad, row);
+    move(info_, pad, y, width - pad * 2, row);
     y += row + gap;
   }
   else
-  {
-    move(copyCommentsButton_, pad + scale(782), pad, scale(150), row);
-    int infoX = pad + scale(944);
-    move(info_, infoX, pad, width - infoX - pad, row);
-  }
+    move(info_, toolbarX, pad, width - toolbarX - pad, row);
   auto mode = source(source_);
   bool fields = mode == ChangeSource::ReadyToPush || mode == ChangeSource::Commit || mode == ChangeSource::Range;
   bool baseVisible = mode == ChangeSource::ReadyToPush || mode == ChangeSource::Range,
@@ -1739,7 +1752,7 @@ void MainWindow::toggle()
 {
   side_ = !side_;
   diff_.setSideBySide(side_);
-  SendMessageW(view_, CB_SETCURSEL, side_ ? 1 : 0, 0);
+  SendMessageW(view_, BM_SETCHECK, side_ ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 void MainWindow::toggleFullFile()
 {
@@ -1862,7 +1875,7 @@ LRESULT CALLBACK MainWindow::comboProcedure(HWND hwnd, UINT msg, WPARAM w, LPARA
 void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
 {
   if (item.CtlID != Files && item.CtlID != ExplorerCommits && item.CtlID != ExplorerFiles && item.CtlID != Commits &&
-      item.CtlID != Source && item.CtlID != View)
+      item.CtlID != Source)
     return;
   int saved = SaveDC(item.hDC);
   RECT client{};
@@ -1880,7 +1893,7 @@ void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
   if (item.itemID != static_cast<UINT>(-1))
   {
     bool commit = item.CtlID == Commits;
-    bool combo = item.CtlID == Commits || item.CtlID == Source || item.CtlID == View;
+    bool combo = item.CtlID == Commits || item.CtlID == Source;
     const auto *items = item.CtlID == Files             ? &fileListItems_
                         : item.CtlID == ExplorerCommits ? &explorerGroups_
                         : item.CtlID == ExplorerFiles   ? &explorerFileItems_
@@ -2197,13 +2210,13 @@ void MainWindow::applyTheme()
   SendMessageW(hwnd_, WM_NCACTIVATE, GetForegroundWindow() == hwnd_, 0);
   for (HWND child = GetWindow(hwnd_, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT))
     SetWindowTheme(child, darkTheme ? L"DarkMode_Explorer" : L"Explorer", nullptr);
-  for (HWND combo : {source_, view_, commits_})
+  for (HWND combo : {source_, commits_})
   {
     COMBOBOXINFO info{sizeof(info)};
     if (GetComboBoxInfo(combo, &info))
       SetWindowTheme(info.hwndList, darkTheme ? L"DarkMode_Explorer" : L"Explorer", nullptr);
   }
-  SetWindowTextW(themeButton_, darkTheme ? L"Light theme" : L"Dark theme");
+  SetWindowTextW(themeButton_, L"\u25D0");
   SendMessageW(tooltip_, TTM_SETTIPBKCOLOR, themeColor(ThemeColor::Surface), 0);
   SendMessageW(tooltip_, TTM_SETTIPTEXTCOLOR, themeColor(ThemeColor::Text), 0);
   RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
@@ -2634,14 +2647,14 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
         return 0;
       }
       if (hdr->code == NM_CUSTOMDRAW &&
-          (hdr->hwndFrom == refresh_ || hdr->hwndFrom == compare_ || hdr->hwndFrom == themeButton_ ||
-            hdr->hwndFrom == fullFileButton_ || hdr->hwndFrom == layoutButton_) &&
+          (hdr->hwndFrom == refresh_ || hdr->hwndFrom == compare_ || hdr->hwndFrom == themeButton_ || hdr->hwndFrom == view_ ||
+            hdr->hwndFrom == fullFileButton_ || hdr->hwndFrom == layoutButton_ || hdr->hwndFrom == copyCommentsButton_) &&
           darkTheme)
       {
         auto draw = reinterpret_cast<NMCUSTOMDRAW *>(l);
         if (draw->dwDrawStage == CDDS_PREPAINT)
         {
-          bool checked = (hdr->hwndFrom == fullFileButton_ || hdr->hwndFrom == layoutButton_) &&
+          bool checked = (hdr->hwndFrom == view_ || hdr->hwndFrom == fullFileButton_ || hdr->hwndFrom == layoutButton_) &&
                          SendMessageW(hdr->hwndFrom, BM_GETCHECK, 0, 0) == BST_CHECKED;
           auto buttonBrush = checked ? CreateSolidBrush(themeColor(ThemeColor::ListSelection)) : fieldBrush_;
           FillRect(draw->hdc, &draw->rc, buttonBrush);
@@ -2860,7 +2873,7 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
             refresh(true);
           break;
         case View:
-          if (HIWORD(w) == CBN_SELCHANGE && (SendMessageW(view_, CB_GETCURSEL, 0, 0) == 1) != side_)
+          if (HIWORD(w) == BN_CLICKED)
             toggle();
           break;
         case Toggle: toggle(); break;

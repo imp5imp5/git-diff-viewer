@@ -47,6 +47,16 @@ try {
     $hints = $state.controls | Where-Object {$_.id -eq 'status'}
     Check ($hints.visible -and $hints.height -gt 0 -and $hints.y + $hints.height -le $state.height) 'Shortcut hints are visible inside the window'
     Check ($hints.text.Contains('Ctrl+Down/Up') -and $hints.text.Contains('Space Commit message')) 'File and commit message shortcuts are documented in the footer'
+    foreach($id in @('refresh','view','full-file','theme','layout','copy-comments','compare')) {
+        $button=@($state.controls | Where-Object {$_.id -eq $id})[0]
+        Check ($button.hint -match 'Hotkeys?:' -and $button.hint.Length -gt 20) "Toolbar button $id explains its purpose and hotkey"
+    }
+    $viewButton=@($state.controls | Where-Object {$_.id -eq 'view'})[0]
+    $themeButton=@($state.controls | Where-Object {$_.id -eq 'theme'})[0]
+    $copyButton=@($state.controls | Where-Object {$_.id -eq 'copy-comments'})[0]
+    Check ($viewButton.text -eq 'Side-by-side' -and -not $viewButton.checked -and $viewButton.hint.Contains('Ctrl+Shift+D')) 'View starts as an unchecked side-by-side toggle'
+    Check ($themeButton.text -eq [string][char]0x25D0 -and $themeButton.width -eq $themeButton.height -and $themeButton.hint.Contains('none')) 'Theme uses the requested square symbol button'
+    Check ($copyButton.text -eq [string][char]0x29C9 -and $copyButton.width -eq $copyButton.height -and $copyButton.hint.Contains('F2')) 'Comment copy uses the requested square symbol button'
     $panels=Invoke-App 'layout' @('panels')
     Check ((@($panels.controls | Where-Object {$_.id -eq 'layout'})[0]).text -eq 'Wide Diff') 'Layout button is named Wide Diff'
     Check ($panels.layout -eq 'panels' -and -not $panels.loading) 'Panel layout switches without Git reload'
@@ -245,8 +255,10 @@ try {
     Check ($review.activeChangeStart -eq $commentRow) 'Change navigation stops on the comment'
     $review=Invoke-App 'view' @('side-by-side')
     Check ($review.commentCount -eq 1 -and $review.commentRows.Count -eq 1) 'Comment survives side-by-side layout'
+    Check ((@($review.controls | Where-Object {$_.id -eq 'view'})[0]).checked) 'Side-by-side toggle becomes checked'
     Capture 'comment-side-by-side.png'
-    Invoke-App 'view' @('unified') | Out-Null
+    $review=Invoke-App 'view' @('unified')
+    Check (-not (@($review.controls | Where-Object {$_.id -eq 'view'})[0]).checked) 'Unified view clears the toggle'
     Invoke-App 'refresh' | Out-Null
     $state=Wait-Idle
     Check ($state.commentCount -eq 0 -and $state.rowCount -eq $compactRows) 'Refresh clears session comments'
@@ -378,6 +390,7 @@ try {
     Check $state.plainText 'Commit message stays plain text in side-by-side mode'
     $light=Invoke-App 'theme' @('light')
     Check (-not $light.darkTheme -and $light.plainText -and $light.selectedFile -eq $state.selectedFile -and $light.fontSize -eq $state.fontSize) 'Light theme preserves message and zoom'
+    Capture 'light-toolbar.png'
     $dark=Invoke-App 'theme' @('dark')
     Check ($dark.darkTheme -and $dark.plainText) 'Dark theme preserves plain message presentation'
     Capture 'commit-message.png'

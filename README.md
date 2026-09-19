@@ -108,7 +108,7 @@ New untracked files are not included in the working-tree diff. They appear after
 
 ### Wide Diff layout
 
-Click **Wide Diff** in the toolbar to show **Commits | Files | Commit message** above a full-width **Diff**. Click it again to return to the original layout. Switching layouts keeps the selected file and diff position without reloading Git data.
+Click **Wide Diff** in the toolbar to show **Commits | Files | Commit message** above a full-width **Diff**. Click it again to return to the original layout. **Side-by-side** is a toggle button; its pressed state shows that Before and After are in separate columns. The square U+25D0 button switches themes, and the square U+29C9 button copies review comments. Hover over a toolbar button to see its purpose and hotkey. Switching layouts keeps the selected file and diff position without reloading Git data.
 
 In History, the Commits panel starts with **Unstaged**, **Staged**, and **Ready to push**, followed by outgoing commits, a **History** divider, older commits in order, and **Load more** at the bottom. Selecting the History divider shows the number of loaded commits. Selecting a change section or commit fills the message and file panels and opens its first file, or restores the previously selected file and Diff position for that section or commit. Selecting a file updates Diff. The message panel shows the full commit message or section summary, followed by the file count and `-N +M` line totals. The Files panel uses the configured FileStatsMode. Each upper panel has its own scrollbar. **Load more** keeps the Commits panel at its current scroll position. **Refresh** clears the remembered per-commit file and Diff positions.
 
