@@ -49,13 +49,21 @@ try {
     Check ($hints.text.Contains('Ctrl+Down/Up') -and $hints.text.Contains('Space Commit message')) 'File and commit message shortcuts are documented in the footer'
     foreach($id in @('refresh','view','full-file','theme','layout','copy-comments','compare')) {
         $button=@($state.controls | Where-Object {$_.id -eq $id})[0]
-        Check ($button.hint -match 'Hotkeys?:' -and $button.hint.Length -gt 20) "Toolbar button $id explains its purpose and hotkey"
+        Check ($button.hint.Length -gt 20) "Toolbar button $id explains its purpose"
+    }
+    foreach($id in @('refresh','view','full-file','copy-comments')) {
+        $button=@($state.controls | Where-Object {$_.id -eq $id})[0]
+        Check ($button.hint -match 'Hotkeys?:') "Toolbar button $id shows its hotkey"
+    }
+    foreach($id in @('theme','layout','compare')) {
+        $button=@($state.controls | Where-Object {$_.id -eq $id})[0]
+        Check ($button.hint -notmatch 'Hotkeys?:') "Toolbar button $id omits the unavailable hotkey"
     }
     $viewButton=@($state.controls | Where-Object {$_.id -eq 'view'})[0]
     $themeButton=@($state.controls | Where-Object {$_.id -eq 'theme'})[0]
     $copyButton=@($state.controls | Where-Object {$_.id -eq 'copy-comments'})[0]
     Check ($viewButton.text -eq 'Side-by-side' -and -not $viewButton.checked -and $viewButton.hint.Contains('Ctrl+Shift+D')) 'View starts as an unchecked side-by-side toggle'
-    Check ($themeButton.text -eq [string][char]0x25D0 -and $themeButton.width -eq $themeButton.height -and $themeButton.hint.Contains('none')) 'Theme uses the requested square symbol button'
+    Check ($themeButton.text -eq [string][char]0x25D0 -and $themeButton.width -eq $themeButton.height) 'Theme uses the requested square symbol button'
     Check ($copyButton.text -eq [string][char]0x29C9 -and $copyButton.width -eq $copyButton.height -and $copyButton.hint.Contains('F2')) 'Comment copy uses the requested square symbol button'
     $panels=Invoke-App 'layout' @('panels')
     Check ((@($panels.controls | Where-Object {$_.id -eq 'layout'})[0]).text -eq 'Wide Diff') 'Layout button is named Wide Diff'

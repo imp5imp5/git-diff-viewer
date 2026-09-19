@@ -347,10 +347,10 @@ void MainWindow::createControls()
     {refresh_, L"Reload Git changes and clear review comments.\nHotkeys: F5 or Ctrl+R."},
     {view_, L"Switch between side-by-side and unified diffs.\nHotkey: Ctrl+Shift+D."},
     {fullFileButton_, L"Show the complete selected file or only changed hunks.\nHotkey: F (outside text fields)."},
-    {themeButton_, L"Switch between dark and light themes.\nHotkey: none."},
-    {layoutButton_, L"Show Commits, Files and Commit message above a full-width diff, or return to classic layout.\nHotkey: none."},
+    {themeButton_, L"Switch between dark and light themes."},
+    {layoutButton_, L"Show Commits, Files and Commit message above a full-width diff, or return to classic layout."},
     {copyCommentsButton_, L"Copy all review comments to the clipboard.\nHotkey: F2."},
-    {compare_, L"Compare the entered base and target refs.\nHotkey: none."}};
+    {compare_, L"Compare the entered base and target refs."}};
   for (const auto &[button, hint] : buttonHints)
   {
     tool.uId = reinterpret_cast<UINT_PTR>(button);
