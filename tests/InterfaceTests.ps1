@@ -78,6 +78,16 @@ try {
     Check ($panels.explorerGroups[0].label -eq 'Unstaged' -and
         $panels.explorerGroups[1].label -eq 'Staged' -and
         $panels.explorerGroups[2].label -eq 'Ready to push') 'History starts with worktree and outgoing sections'
+    $historyIndex=-1
+    for($i=0;$i -lt $panels.explorerGroups.Count;$i++) {
+        if($panels.explorerGroups[$i].label -eq 'History' -and $panels.explorerGroups[$i].kind -eq 'section') {$historyIndex=$i;break}
+    }
+    Check ($historyIndex -gt 2 -and $panels.explorerGroups[$historyIndex-1].key.StartsWith('outgoing') -and
+        $panels.explorerGroups[$historyIndex+1].key.StartsWith('history')) 'History divider separates outgoing and older commits'
+    $historySection=Invoke-App 'select-explorer-group' @([string]$historyIndex)
+    Check ($historySection.explorerGroupSelection -eq $historyIndex -and $historySection.explorerFiles.Count -eq 0 -and
+        $historySection.explorerMessageText.Contains('commits loaded') -and
+        $historySection.status.Contains('commits loaded')) 'History divider shows the loaded commit count'
     $panels=Invoke-App 'explorer-wheel' @('commits','-120')
     Check ($panels.explorerGroupTop -gt 0) 'Commit wheel scrolls the visible list'
     $panels=Invoke-App 'explorer-wheel' @('commits','120')

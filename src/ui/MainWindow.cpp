@@ -596,8 +596,7 @@ void MainWindow::rebuildExplorer()
   if (mode == ChangeSource::History)
   {
     for (const auto &item : fileListItems_)
-      if ((item.kind == FileListItemKind::Section && item.group != FileListGroup::History) || item.kind == FileListItemKind::Commit ||
-          item.kind == FileListItemKind::LoadMore)
+      if (item.kind == FileListItemKind::Section || item.kind == FileListItemKind::Commit || item.kind == FileListItemKind::LoadMore)
         add(item);
   }
   else if (mode == ChangeSource::ReadyToPush || mode == ChangeSource::Range)
@@ -727,9 +726,14 @@ void MainWindow::selectExplorerGroup(int index, bool preserveFile, bool selectLa
     message = group.label;
     if (group.group == FileListGroup::Outgoing && fileCount == 0 && !snapshot_.history.outgoingNotice.empty())
       message += L"\n\n" + snapshot_.history.outgoingNotice;
+    if (group.kind == FileListItemKind::Section && group.group == FileListGroup::History)
+      message += snapshot_.history.commits.empty()
+                   ? L"\n\nNo commits in history."
+                   : L"\n\n" + std::to_wstring(snapshot_.history.commits.size()) + L" commits loaded, newest first.";
   }
-  message += L"\n\n----------------------------------------\n" + std::to_wstring(fileCount) + L" files changed    -" +
-             std::to_wstring(removed) + L" +" + std::to_wstring(added);
+  if (group.kind != FileListItemKind::Section || group.group != FileListGroup::History)
+    message += L"\n\n----------------------------------------\n" + std::to_wstring(fileCount) + L" files changed    -" +
+               std::to_wstring(removed) + L" +" + std::to_wstring(added);
   std::wstring lines;
   for (wchar_t c : message)
   {
@@ -1543,11 +1547,14 @@ void MainWindow::updateStatus()
       document = &snapshot_.commitDocuments[item.commitIndex];
   }
   size_t added = 0, removed = 0;
+  bool historySection = false;
   int group = static_cast<int>(SendMessageW(explorerCommits_, LB_GETCURSEL, 0, 0));
   if (explorerLayout_ && group >= 0 && static_cast<size_t>(group) < explorerGroups_.size())
   {
-    added = explorerGroups_[static_cast<size_t>(group)].added;
-    removed = explorerGroups_[static_cast<size_t>(group)].removed;
+    const auto &item = explorerGroups_[static_cast<size_t>(group)];
+    added = item.added;
+    removed = item.removed;
+    historySection = item.kind == FileListItemKind::Section && item.group == FileListGroup::History;
   }
   else
     for (const auto &file : document->files)
@@ -1556,8 +1563,13 @@ void MainWindow::updateStatus()
       added += counts.first;
       removed += counts.second;
     }
-  auto status =
-    std::to_wstring(document->files.size()) + L" files changed    -" + std::to_wstring(removed) + L"    +" + std::to_wstring(added);
+  std::wstring status;
+  if (historySection)
+    status = snapshot_.history.commits.empty() ? L"No commits in history."
+                                               : std::to_wstring(snapshot_.history.commits.size()) + L" commits loaded";
+  else
+    status =
+      std::to_wstring(document->files.size()) + L" files changed    -" + std::to_wstring(removed) + L"    +" + std::to_wstring(added);
   if (!snapshot_.notice.empty())
     status += L"    " + snapshot_.notice;
   else
