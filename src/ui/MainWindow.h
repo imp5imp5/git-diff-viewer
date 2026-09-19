@@ -90,6 +90,7 @@ private:
   static LRESULT CALLBACK explorerMessageProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   void setExplorerLayout(bool enabled);
   void moveExplorerSplitter(int index, int position);
+  void redrawExplorerPanels();
   static LRESULT CALLBACK comboProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   static LRESULT CALLBACK commitListProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   void screenshot();
@@ -133,6 +134,7 @@ private:
   const FileDiff *previewPreviousFile_{};
   bool previewPreviousPlain_{};
   int previewIndex_{-1}, previewTop_{};
+  size_t explorerResizeRepaints_{};
   int filePaneWidth_{}, splitterDragOffset_{}, explorerCommitWidth_{300}, explorerMessageWidth_{360}, explorerTopHeight_{280},
     explorerDragIndex_{-1};
   RECT splitter_{}, explorerSplitters_[3]{};

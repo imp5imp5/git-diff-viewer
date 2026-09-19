@@ -42,6 +42,7 @@ constexpr int minFilePaneWidth = 220;
 constexpr int minDiffPaneWidth = 300;
 constexpr UINT_PTR automationTimer = 1;
 constexpr UINT_PTR statusAnimationTimer = 2;
+constexpr UINT_PTR explorerResizeTimer = 3;
 std::wstring getText(HWND h)
 {
   int n = GetWindowTextLengthW(h);
@@ -551,6 +552,19 @@ void MainWindow::setExplorerLayout(bool enabled)
   layout();
   diff_.scroll(top);
   RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+}
+void MainWindow::redrawExplorerPanels()
+{
+  if (!explorerLayout_)
+    return;
+  RECT client{};
+  GetClientRect(hwnd_, &client);
+  RECT upper{0, explorerSplitters_[0].top, client.right, explorerSplitters_[2].bottom};
+  RedrawWindow(hwnd_, &upper, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+  for (auto panel : {explorerCommitLabel_, explorerFilesLabel_, explorerMessageLabel_, explorerCommits_, explorerFiles_,
+         explorerMessage_, explorerBars_[0], explorerBars_[1], explorerBars_[2]})
+    RedrawWindow(panel, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+  ++explorerResizeRepaints_;
 }
 void MainWindow::moveExplorerSplitter(int index, int position)
 {
@@ -2526,6 +2540,11 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
         ++statusAnimationPhase_;
         InvalidateRect(status_, nullptr, FALSE);
       }
+      else if (w == explorerResizeTimer)
+      {
+        KillTimer(hwnd_, explorerResizeTimer);
+        redrawExplorerPanels();
+      }
       return 0;
     case WM_PRINTCLIENT:
     {
@@ -2592,6 +2611,8 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
         {
           splitterDragOffset_ = position;
           moveExplorerSplitter(explorerDragIndex_, position);
+          KillTimer(hwnd_, explorerResizeTimer);
+          SetTimer(hwnd_, explorerResizeTimer, 100, nullptr);
         }
         return 0;
       }
@@ -2607,8 +2628,10 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
         int position = explorerDragIndex_ == 2 ? GET_Y_LPARAM(l) : GET_X_LPARAM(l);
         if (position != splitterDragOffset_)
           moveExplorerSplitter(explorerDragIndex_, position);
+        KillTimer(hwnd_, explorerResizeTimer);
         explorerDragIndex_ = -1;
         ReleaseCapture();
+        redrawExplorerPanels();
         return 0;
       }
       if (draggingSplitter_)
@@ -2619,9 +2642,15 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
       }
       break;
     case WM_CAPTURECHANGED:
+    {
+      bool explorerWasDragging = explorerDragIndex_ >= 0;
+      KillTimer(hwnd_, explorerResizeTimer);
       draggingSplitter_ = false;
       explorerDragIndex_ = -1;
+      if (explorerWasDragging)
+        redrawExplorerPanels();
       break;
+    }
     case WM_CANCELMODE:
       if (draggingSplitter_ || explorerDragIndex_ >= 0)
         ReleaseCapture();

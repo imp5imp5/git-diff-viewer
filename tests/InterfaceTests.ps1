@@ -73,6 +73,21 @@ try {
     $y=$panels.explorerSplitters[2].y + 20
     $panels=Invoke-App 'explorer-splitter' @('2',"$y")
     Check ($panels.explorerSplitters[2].y -eq $y) 'Diff divider moves'
+    foreach($dragIndex in 0,1,2) {
+        $divider=$panels.explorerSplitters[$dragIndex]
+        $destination=if($dragIndex -eq 2) {$divider.y+20} else {$divider.x+20}
+        Invoke-App 'explorer-drag' @('start',"$dragIndex") | Out-Null
+        $moved=Invoke-App 'explorer-drag' @('move',"$destination")
+        $paintAfterMove=$moved.explorerResizeRepaints
+        Start-Sleep -Milliseconds 250
+        $settled=Invoke-App 'state'
+        Check ($settled.explorerResizeRepaints -gt $paintAfterMove) 'Upper panels are redrawn 100 ms after splitter movement stops'
+        Start-Sleep -Milliseconds 250
+        $idle=Invoke-App 'state'
+        Check ($idle.explorerResizeRepaints -eq $settled.explorerResizeRepaints) 'Upper panels do not repaint continuously while drag is still held'
+        $panels=Invoke-App 'explorer-drag' @('end',"$destination")
+        Check ($panels.explorerResizeRepaints -gt $idle.explorerResizeRepaints) 'Upper panels are redrawn when splitter drag is released'
+    }
     $panels=Invoke-App 'source' @('history')
     $panels=Wait-Idle
     Check ($panels.explorerGroups[0].label -eq 'Unstaged' -and

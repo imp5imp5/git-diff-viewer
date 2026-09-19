@@ -69,6 +69,7 @@ std::string MainWindow::stateJson() const
                     ",\"explorerGroupTop\":" + std::to_string(SendMessageW(explorerCommits_, LB_GETTOPINDEX, 0, 0)) +
                     ",\"explorerFileTop\":" + std::to_string(SendMessageW(explorerFiles_, LB_GETTOPINDEX, 0, 0)) +
                     ",\"explorerCommitThumbTop\":" + std::to_string(explorerThumb(0).top) +
+                    ",\"explorerResizeRepaints\":" + std::to_string(explorerResizeRepaints_) +
                     ",\"explorerFileThumbTop\":" + std::to_string(explorerThumb(1).top) +
                     ",\"explorerTooltip\":" + json(tooltipOwner_ == explorerFiles_ ? tooltipText_ : L"") +
                     ",\"explorerMessageSelectionEnd\":" + std::to_string(HIWORD(SendMessageW(explorerMessage_, EM_GETSEL, 0, 0))) +
@@ -320,6 +321,36 @@ void MainWindow::automationTick()
     {
       int index = integer(arg(0), 0, 2);
       moveExplorerSplitter(index, integer(arg(1), 0, 4096));
+    }
+    else if (command == L"explorer-drag")
+    {
+      if (!explorerLayout_)
+        throw std::runtime_error("Wide Diff layout is required for explorer drag.");
+      auto action = arg(0);
+      if (action == L"start")
+      {
+        int index = integer(arg(1), 0, 2);
+        if (explorerDragIndex_ >= 0)
+          throw std::runtime_error("Explorer drag is already active.");
+        const auto &divider = explorerSplitters_[index];
+        int x = index == 2 ? divider.left + 20 : (divider.left + divider.right) / 2;
+        int y = (divider.top + divider.bottom) / 2;
+        SendMessageW(hwnd_, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
+        if (explorerDragIndex_ != index)
+          throw std::runtime_error("Explorer drag did not start.");
+      }
+      else if (action == L"move" || action == L"end")
+      {
+        if (explorerDragIndex_ < 0)
+          throw std::runtime_error("Explorer drag is not active.");
+        int index = explorerDragIndex_, position = integer(arg(1), 0, 4096);
+        const auto &divider = explorerSplitters_[index];
+        int x = index == 2 ? divider.left + 20 : position;
+        int y = index == 2 ? position : (divider.top + divider.bottom) / 2;
+        SendMessageW(hwnd_, action == L"move" ? WM_MOUSEMOVE : WM_LBUTTONUP, action == L"move" ? MK_LBUTTON : 0, MAKELPARAM(x, y));
+      }
+      else
+        throw std::runtime_error("Explorer drag action must be start, move or end.");
     }
     else if (command == L"full-file")
     {
