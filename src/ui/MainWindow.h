@@ -33,6 +33,13 @@ private:
     Outgoing,
     History
   };
+  enum class FileStatsMode
+  {
+    None,
+    Bars,
+    Numbers,
+    Auto
+  };
   struct FileListItem
   {
     FileListItemKind kind{FileListItemKind::File};
@@ -43,6 +50,7 @@ private:
     FileListGroup group{FileListGroup::None};
     const DiffDocument *document{};
     const Commit *commit{};
+    size_t maxAdded{}, maxRemoved{};
   };
   static LRESULT CALLBACK procedure(HWND, UINT, WPARAM, LPARAM);
   LRESULT message(UINT, WPARAM, LPARAM);
@@ -61,6 +69,7 @@ private:
   void loadMoreHistory();
   int messageReturnIndex_{-1}, messageReturnTop_{};
   std::vector<FileListItem> fileListItems_;
+  FileStatsMode fileStatsMode_{FileStatsMode::Auto};
   void sourceChanged();
   void toggle();
   void toggleFullFile();

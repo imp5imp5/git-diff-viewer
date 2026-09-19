@@ -113,13 +113,13 @@ Right-click a file to select it and open **Copy File Name**. This copies the pat
 
 Unresolved conflicts in staged and unstaged comparisons appear with a `?` status and an explanatory message. Combined conflict diffs are not rendered; resolve the conflict using Git or a merge tool, then refresh.
 
-Two block indicators after each filename show removed lines (red) and added lines (green).
-Their eight heights represent 1, 2, 3, 4–5, 6–9, 10–30, 31–100, and more than 100 lines.
-Zero-count blocks are drawn in the row background color and are invisible; binary files have no textual line counts.
+Set `FileStatsMode` under `[GitDiffViewer]` in `settings.ini` to `none`, `bars`, `numbers`, or `auto` (the default). `auto` shows numbers when the file-list row is wider than forty `0` characters in the list font, and bars otherwise. Number columns show removed lines as red `-N` and added lines as green `+M`; their widths are calculated separately for each commit, section, and summary.
+
+Bars have eight heights representing 1, 2, 3, 4–5, 6–9, 10–30, 31–100, and more than 100 lines. Zero-count bars are invisible; binary files have no textual line counts.
 
 Select a commit heading to display its SHA, author, date, and full message without diff headers or a side-by-side divider. Message colors follow the selected theme. In **Single commit**, the same information appears in the first file-list entry, **`<<Commit Message>>`**.
 
-In **History**, **Changed files** contains bold **Unstaged**, **Staged**, **Ready to push**, and **History** headings, with commits shown newest first. Section headings open a summary. Ready to push and History summaries include the full messages of their commits, separated by 80 underscore characters. Empty sections remain visible with an explanation, including repositories without an upstream. Commits listed under **Ready to push** are excluded from the general **History** section. The initial page contains 10 commits by default. Choose **Load more** (or focus it and press `Enter` or `Space`) to append 10 more; refresh starts from the current `HEAD` while retaining the expanded in-session limit. Untracked files are not included.
+In **History**, **Changed files** contains bold **Unstaged**, **Staged**, **Ready to push**, and **History** headings, with commits shown newest first. Section headings open a summary. Unstaged, Staged, and Ready to push headings show total removed and added lines on the right. Commit headings place the subject three spaces after the short hash and show commit totals on the right when the file list is wider than 60 `0` characters. Ready to push and History summaries include the full messages of their commits, separated by 80 underscore characters. Empty sections remain visible with an explanation, including repositories without an upstream. Commits listed under **Ready to push** are excluded from the general **History** section. The initial page contains 10 commits by default. Choose **Load more** (or focus it and press `Enter` or `Space`) to append 10 more; refresh starts from the current `HEAD` while retaining the expanded in-session limit. Untracked files are not included.
 
 Use **Refresh** to reload repository changes. Refresh is manual.
 

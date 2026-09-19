@@ -59,6 +59,17 @@ std::pair<size_t, size_t> changes(const FileDiff &file)
     }
   return {added, removed};
 }
+std::pair<size_t, size_t> changes(const DiffDocument &document)
+{
+  size_t added = 0, removed = 0;
+  for (const auto &file : document.files)
+  {
+    auto counts = changes(file);
+    added += counts.first;
+    removed += counts.second;
+  }
+  return {added, removed};
+}
 } // namespace
 MainWindow::~MainWindow()
 {
@@ -80,6 +91,13 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
   automationDirectory_ = std::move(automationDirectory);
   if (automationDirectory_.empty())
     settings_ = Settings::loadUser();
+  auto statsMode = settings_.string(L"FileStatsMode");
+  if (statsMode == L"none")
+    fileStatsMode_ = FileStatsMode::None;
+  else if (statsMode == L"bars")
+    fileStatsMode_ = FileStatsMode::Bars;
+  else if (statsMode == L"numbers")
+    fileStatsMode_ = FileStatsMode::Numbers;
   historyInitialLimit_ = automationDirectory_.empty() ? std::clamp<size_t>(settings_.number(L"HistoryCommitCount", 10), 1, 1000) : 10;
   historyLimit_ = historyInitialLimit_;
   side_ = automationDirectory_.empty() && settings_.number(L"SideBySide", 0) != 0;
@@ -615,6 +633,12 @@ void MainWindow::loaded()
   {
     auto addSection = [&](const wchar_t *label, const wchar_t *key, FileListGroup group, const DiffDocument *document) {
       FileListItem item{FileListItemKind::Section, nullptr, 0, 0, 0, label, key};
+      if (document)
+      {
+        auto [added, removed] = changes(*document);
+        item.added = added;
+        item.removed = removed;
+      }
       item.group = group;
       item.document = document;
       int index = addItem(std::move(item));
@@ -648,8 +672,9 @@ void MainWindow::loaded()
     {
       const auto &commit = snapshot_.history.outgoingCommits[commitIndex];
       const auto &document = snapshot_.history.outgoingDocuments[commitIndex];
-      FileListItem header{FileListItemKind::Commit, nullptr, commitIndex, 0, 0, commit.id.substr(0, 8) + L"  " + commit.subject,
-        L"outgoing\n" + commit.id};
+      auto [added, removed] = changes(document);
+      FileListItem header{FileListItemKind::Commit, nullptr, commitIndex, added, removed,
+        commit.id.substr(0, 8) + L"   " + commit.subject, L"outgoing\n" + commit.id};
       header.group = FileListGroup::Outgoing;
       header.document = &document;
       header.commit = &commit;
@@ -665,8 +690,9 @@ void MainWindow::loaded()
     {
       const auto &commit = snapshot_.history.commits[commitIndex];
       const auto &document = snapshot_.history.commitDocuments[commitIndex];
-      FileListItem header{FileListItemKind::Commit, nullptr, commitIndex, 0, 0, commit.id.substr(0, 8) + L"  " + commit.subject,
-        L"history\n" + commit.id};
+      auto [added, removed] = changes(document);
+      FileListItem header{FileListItemKind::Commit, nullptr, commitIndex, added, removed,
+        commit.id.substr(0, 8) + L"   " + commit.subject, L"history\n" + commit.id};
       header.group = FileListGroup::History;
       header.document = &document;
       header.commit = &commit;
@@ -684,8 +710,9 @@ void MainWindow::loaded()
     {
       const auto &commit = snapshot_.commits[commitIndex];
       auto key = L"commit\n" + commit.id;
-      int header =
-        addItem({FileListItemKind::Commit, nullptr, commitIndex, 0, 0, commit.id.substr(0, 8) + L"  " + commit.subject, key});
+      auto [added, removed] = changes(snapshot_.commitDocuments[commitIndex]);
+      int header = addItem(
+        {FileListItemKind::Commit, nullptr, commitIndex, added, removed, commit.id.substr(0, 8) + L"   " + commit.subject, key});
       if (fallback < 0)
         fallback = header;
       for (const auto &file : snapshot_.commitDocuments[commitIndex].files)
@@ -725,6 +752,28 @@ void MainWindow::loaded()
       if (selected < 0 && file.path() == selectedPath_)
         selected = index;
     }
+  // File rows form one contiguous run per commit, section, or summary.
+  for (size_t first = 0; first < fileListItems_.size();)
+  {
+    if (fileListItems_[first].kind != FileListItemKind::File)
+    {
+      ++first;
+      continue;
+    }
+    size_t last = first, maxAdded = 0, maxRemoved = 0;
+    while (last < fileListItems_.size() && fileListItems_[last].kind == FileListItemKind::File)
+    {
+      maxAdded = std::max(maxAdded, fileListItems_[last].added);
+      maxRemoved = std::max(maxRemoved, fileListItems_[last].removed);
+      ++last;
+    }
+    for (size_t index = first; index < last; ++index)
+    {
+      fileListItems_[index].maxAdded = maxAdded;
+      fileListItems_[index].maxRemoved = maxRemoved;
+    }
+    first = last;
+  }
   SendMessageW(files_, WM_SETREDRAW, TRUE, 0);
   InvalidateRect(files_, nullptr, TRUE);
   if (!fileListItems_.empty())
@@ -1239,26 +1288,85 @@ void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
         textRect.top += MulDiv(2, static_cast<int>(dpi_), 96);
         SetTextColor(item.hDC, themeColor(selected ? ThemeColor::SelectionText : ThemeColor::Title));
       }
+      bool sectionTotals = listItem && listItem->kind == FileListItemKind::Section &&
+                           (listItem->group == FileListGroup::Unstaged || listItem->group == FileListGroup::Staged ||
+                             listItem->group == FileListGroup::Outgoing);
+      bool commitTotals = false;
+      if (commitHeader)
+      {
+        SIZE zeroWidth{};
+        GetTextExtentPoint32W(item.hDC, L"0", 1, &zeroWidth);
+        commitTotals = item.rcItem.right - item.rcItem.left > 60 * zeroWidth.cx;
+      }
+      if (sectionTotals || commitTotals)
+      {
+        auto drawTotal = [&](size_t count, wchar_t sign, ThemeColor role) {
+          std::wstring value = sign + std::to_wstring(count);
+          SIZE extent{};
+          GetTextExtentPoint32W(item.hDC, value.c_str(), static_cast<int>(value.size()), &extent);
+          RECT column{textRect.right - extent.cx, textRect.top, textRect.right, textRect.bottom};
+          SetTextColor(item.hDC, themeColor(role));
+          DrawTextW(item.hDC, value.c_str(), static_cast<int>(value.size()), &column,
+            DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+          textRect.right = column.left;
+        };
+        drawTotal(listItem->added, L'+', ThemeColor::AddedIndicator);
+        SIZE spaceWidth{};
+        GetTextExtentPoint32W(item.hDC, L" ", 1, &spaceWidth);
+        textRect.right -= spaceWidth.cx;
+        drawTotal(listItem->removed, L'-', ThemeColor::RemovedIndicator);
+        textRect.right -= pad;
+        SetTextColor(item.hDC, themeColor(selected ? ThemeColor::SelectionText : ThemeColor::Title));
+      }
       if (listItem && listItem->kind == FileListItemKind::File)
       {
         auto [added, removed] = std::pair{listItem->added, listItem->removed};
-        int cell = MulDiv(13, static_cast<int>(dpi_), 96);
-        RECT indicator = textRect;
-        indicator.left = indicator.right - cell * 2;
-        indicator.right = indicator.left + cell;
-        auto drawIndicator = [&](size_t count, ThemeColor role) {
-          const size_t limits[] = {1, 2, 3, 5, 9, 30, 100};
-          int level = 0;
-          while (level < 7 && count > limits[level])
-            ++level;
-          wchar_t glyph = static_cast<wchar_t>(0x2581 + level);
-          SetTextColor(item.hDC, themeColor(count ? role : selected ? ThemeColor::ListSelection : ThemeColor::Surface));
-          DrawTextW(item.hDC, &glyph, 1, &indicator, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-          OffsetRect(&indicator, cell, 0);
-        };
-        drawIndicator(removed, ThemeColor::RemovedIndicator);
-        drawIndicator(added, ThemeColor::AddedIndicator);
-        textRect.right -= cell * 2 + pad;
+        FileStatsMode mode = fileStatsMode_;
+        SIZE zeroWidth{};
+        if (mode == FileStatsMode::Auto)
+          GetTextExtentPoint32W(item.hDC, L"0", 1, &zeroWidth);
+        if (mode == FileStatsMode::Auto)
+          mode = item.rcItem.right - item.rcItem.left > 40 * zeroWidth.cx ? FileStatsMode::Numbers : FileStatsMode::Bars;
+        if (mode == FileStatsMode::Bars)
+        {
+          int cell = MulDiv(13, static_cast<int>(dpi_), 96);
+          RECT indicator = textRect;
+          indicator.left = indicator.right - cell * 2;
+          indicator.right = indicator.left + cell;
+          auto drawIndicator = [&](size_t count, ThemeColor role) {
+            const size_t limits[] = {1, 2, 3, 5, 9, 30, 100};
+            int level = 0;
+            while (level < 7 && count > limits[level])
+              ++level;
+            wchar_t glyph = static_cast<wchar_t>(0x2581 + level);
+            SetTextColor(item.hDC, themeColor(count ? role : selected ? ThemeColor::ListSelection : ThemeColor::Surface));
+            DrawTextW(item.hDC, &glyph, 1, &indicator, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            OffsetRect(&indicator, cell, 0);
+          };
+          drawIndicator(removed, ThemeColor::RemovedIndicator);
+          drawIndicator(added, ThemeColor::AddedIndicator);
+          textRect.right -= cell * 2 + pad;
+        }
+        else if (mode == FileStatsMode::Numbers)
+        {
+          auto drawCount = [&](size_t count, size_t maximum, wchar_t sign, ThemeColor role) {
+            std::wstring widest = sign + std::to_wstring(maximum);
+            SIZE extent{};
+            GetTextExtentPoint32W(item.hDC, widest.c_str(), static_cast<int>(widest.size()), &extent);
+            RECT column{textRect.right - extent.cx, textRect.top, textRect.right, textRect.bottom};
+            std::wstring value = sign + std::to_wstring(count);
+            SetTextColor(item.hDC, themeColor(role));
+            DrawTextW(item.hDC, value.c_str(), static_cast<int>(value.size()), &column,
+              DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+            textRect.right = column.left;
+          };
+          drawCount(added, listItem->maxAdded, L'+', ThemeColor::AddedIndicator);
+          SIZE spaceWidth{};
+          GetTextExtentPoint32W(item.hDC, L" ", 1, &spaceWidth);
+          textRect.right -= spaceWidth.cx;
+          drawCount(removed, listItem->maxRemoved, L'-', ThemeColor::RemovedIndicator);
+          textRect.right -= pad;
+        }
         textRect.left += pad;
         SetTextColor(item.hDC, themeColor(selected ? ThemeColor::SelectionText : ThemeColor::Text));
       }
@@ -1267,11 +1375,19 @@ void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
       {
         RECT prefix = textRect;
         bool commitColumns = commit || commitHeader;
-        prefix.right = textRect.left + MulDiv(commitColumns ? 80 : 28, static_cast<int>(dpi_), 96);
         auto code = value.substr(0, commitColumns ? 8 : 1);
+        if (commitHeader)
+        {
+          SIZE hashWidth{}, spacesWidth{};
+          GetTextExtentPoint32W(item.hDC, code.c_str(), static_cast<int>(code.size()), &hashWidth);
+          GetTextExtentPoint32W(item.hDC, L"   ", 3, &spacesWidth);
+          prefix.right = textRect.left + hashWidth.cx + spacesWidth.cx;
+        }
+        else
+          prefix.right = textRect.left + MulDiv(commit ? 80 : 28, static_cast<int>(dpi_), 96);
         DrawTextW(item.hDC, code.c_str(), static_cast<int>(code.size()), &prefix, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
         textRect.left = prefix.right;
-        value.erase(0, commitColumns ? 10 : 4);
+        value.erase(0, commitHeader ? 11 : commit ? 10 : 4);
       }
       bool file = listItem && listItem->kind == FileListItemKind::File;
       if (file)
@@ -1286,7 +1402,7 @@ void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
       int textClip = SaveDC(item.hDC);
       IntersectClipRect(item.hDC, textRect.left, textRect.top, textRect.right, textRect.bottom);
       DrawTextW(item.hDC, value.c_str(), static_cast<int>(value.size()), &textRect,
-        align | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | (combo || commitHeader ? DT_END_ELLIPSIS : 0));
+        align | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | (combo || sectionHeader ? DT_END_ELLIPSIS : 0));
       auto separator = file ? value.find_last_of(L"/\\") : std::wstring::npos;
       if (separator != std::wstring::npos)
       {
@@ -1364,6 +1480,8 @@ void MainWindow::saveSettings()
   settings_.setNumber(L"DarkTheme", darkTheme);
   settings_.setNumber(L"FilePaneWidth", static_cast<DWORD>(filePaneWidth_));
   settings_.setNumber(L"HistoryCommitCount", static_cast<DWORD>(historyInitialLimit_));
+  const wchar_t *statsModes[] = {L"none", L"bars", L"numbers", L"auto"};
+  settings_.setString(L"FileStatsMode", statsModes[static_cast<size_t>(fileStatsMode_)]);
   if (source(source_) == ChangeSource::ReadyToPush)
     readyBase_ = getText(base_);
   else if (source(source_) == ChangeSource::Range)
