@@ -10,9 +10,9 @@ The application uses the installed Git command-line client to read repository da
 
 - Review staged changes, unstaged changes, all local changes, repository history, individual commits, and comparisons between refs.
 - Inspect local commits relative to an upstream or an explicitly selected base branch.
-- Switch between unified and side-by-side layouts without reloading Git data, while preserving the current viewing position.
+- Switch between unified and side-by-side diffs and between the classic and Wide Diff window layouts without reloading Git data, while preserving the current viewing position.
 - Display line numbers, added and removed lines, file statuses, renames, and binary-file notices.
-- Read full commit messages, or preview them by hovering over entries in the local commit dropdown.
+- Read full commit messages in Wide Diff, or preview them by hovering over entries in the local commit dropdown.
 - Browse Unicode paths and text, with virtualized diff rendering and background Git loading.
 - Adjust the diff font size and switch between dark and light themes.
 - Remember window placement and viewing preferences between sessions.
@@ -105,9 +105,17 @@ In **Ready to push** and **Commit range**, **Changed files** groups files by com
 
 New untracked files are not included in the working-tree diff. They appear after you stage them using Git outside the application.
 
+### Wide Diff layout
+
+Click **Wide Diff** in the toolbar to show **Commits | Files | Commit message** above a full-width **Diff**. Click it again to return to the original layout. Switching layouts keeps the selected file and diff position without reloading Git data.
+
+In History, the Commits panel starts with **Unstaged**, **Staged**, and **Ready to push**, followed by commits in order and **Load more** at the bottom. Selecting a section or commit fills the message and file panels and opens its first file, or restores the previously selected file and Diff position for that section or commit. Selecting a file updates Diff. The message panel shows the full commit message or section summary, followed by the file count and `-N +M` line totals. The Files panel uses the configured FileStatsMode. Each upper panel has its own scrollbar. **Load more** keeps the Commits panel at its current scroll position. **Refresh** clears the remembered per-commit file and Diff positions.
+
+Drag either vertical divider between the upper panels or the horizontal divider above Diff to resize them. The chosen layout and the three divider sizes are saved in settings.ini as ExplorerLayout, ExplorerCommitWidth, ExplorerMessageWidth (the legacy name for the middle Files panel), and ExplorerTopHeight. The original FilePaneWidth is saved separately.
+
 ### Browse files and commits
 
-Select a file under **Changed files** to open its diff. Long paths are aligned to the right so the filename remains visible. Hover over a file to see its full absolute path.
+Select a file under **Changed files** to open its diff. Long paths are aligned to the right so the filename remains visible. Hover over a file to see its full absolute path and `-N +M` line totals.
 
 Right-click a file to select it and open **Copy File Name**. This copies the path relative to the repository root.
 
@@ -117,9 +125,9 @@ Set `FileStatsMode` under `[GitDiffViewer]` in `settings.ini` to `none`, `bars`,
 
 Bars have eight heights representing 1, 2, 3, 4–5, 6–9, 10–30, 31–100, and more than 100 lines. Zero-count bars are invisible; binary files have no textual line counts.
 
-Select a commit heading to display its SHA, author, date, and full message without diff headers or a side-by-side divider. Message colors follow the selected theme. In **Single commit**, the same information appears in the first file-list entry, **`<<Commit Message>>`**.
+In the classic layout, select a commit heading to display its SHA, author, date, and full message without diff headers or a side-by-side divider. Message colors follow the selected theme. In **Single commit**, the same information appears in the first file-list entry, **`<<Commit Message>>`**.
 
-In **History**, **Changed files** contains bold **Unstaged**, **Staged**, **Ready to push**, and **History** headings, with commits shown newest first. Section headings open a summary. Unstaged, Staged, and Ready to push headings show total removed and added lines on the right. Commit headings place the subject three spaces after the short hash and show commit totals on the right when the file list is wider than 60 `0` characters. Ready to push and History summaries include the full messages of their commits, separated by 80 underscore characters. Empty sections remain visible with an explanation, including repositories without an upstream. Commits listed under **Ready to push** are excluded from the general **History** section. The initial page contains 10 commits by default. Choose **Load more** (or focus it and press `Enter` or `Space`) to append 10 more; refresh starts from the current `HEAD` while retaining the expanded in-session limit. Untracked files are not included.
+In **History**, **Changed files** contains bold **Unstaged**, **Staged**, **Ready to push**, and **History** headings, with commits shown newest first. Section headings open a summary. Unstaged, Staged, and Ready to push headings show total removed and added lines on the right. Commit subjects align after the short hash and show commit totals on the right when the file list is wider than 60 `0` characters. Ready to push and History summaries include the full messages of their commits, separated by 80 underscore characters. Empty sections remain visible with an explanation, including repositories without an upstream. Commits listed under **Ready to push** are excluded from the general **History** section. The initial page contains 10 commits by default. Choose **Load more** (or focus it and press `Enter` or `Space`) to append 10 more; refresh starts from the current `HEAD` while retaining the expanded in-session limit. Untracked files are not included.
 
 Use **Refresh** to reload repository changes. Refresh is manual.
 
@@ -135,8 +143,8 @@ Use **Full file** or press `F` to show every line of the selected changed text f
 | `Ctrl+Shift+D` | Toggle unified / side-by-side layout. |
 | `F` while not editing a ref or using a dropdown | Toggle full-file context. |
 | `Ctrl+Page Up` / `Ctrl+Page Down` | Go to the previous / next changed block. |
-| `Ctrl+Down` / `Ctrl+Up` | Select the next / previous item in **Changed files**. |
-| `Space` with the file list, diff, or closed commit dropdown focused | Toggle the current commit message, restoring the previous file and scroll position on return. |
+| `Ctrl+Down` / `Ctrl+Up` | Select the next / previous item in **Changed files**, or in the active Commits or Files panel in Wide Diff. |
+| `Space` with the classic file list, diff, or closed commit dropdown focused | Toggle the current commit message, restoring the previous file and scroll position on return. |
 | `Enter` or `Space` on **Load more** | Append the next History page. |
 | Middle click in the diff, then move up/down | Enable autoscroll. Distance from the click point controls speed. Click again or press Escape to stop. |
 | `Ctrl+mouse wheel` over the diff | Change diff font size. |
@@ -145,10 +153,13 @@ Use **Full file** or press `F` to show every line of the selected changed text f
 | Mouse drag between the file list and diff | Resize the file list. |
 | `Shift+click` | Extend the row selection. |
 | `Ctrl+A` with the diff focused | Select all diff rows. |
+| `Ctrl+A` with **Commit message** focused | Select the full message text. |
 | `Ctrl+C` with the diff focused | Copy selected rows. A single row is copied without a trailing line break. |
 | Arrow keys, `Page Up`, `Page Down`, `Home`, `End` | Navigate within the focused diff. |
 | `Ctrl+Shift+S` | Save an application PNG through a file dialog. |
 
 ### Automation interface
 
-Launch with `--automation-dir <directory>` to enable the local file-based automation protocol used by the interface tests. The `source` command accepts `history`, History rows report `section`, `notice`, `commit`, `file`, `spacer`, or `load-more` in `fileList`, and the `load-more` command activates the next page. `list-key enter` and `list-key space` exercise keyboard activation; `load-more-input mouse|enter|space` targets the paging row directly. Pagination keeps the selected item, diff position, and list scroll position while appending rows.
+The automation command `layout panels` selects Wide Diff, while `layout classic` selects the original layout. Commands `select-explorer-group`, `select-explorer-file`, `explorer-splitter`, and `explorer-wheel` control the upper panels. State reports their rows, bounds, and message text.
+
+Launch with `--automation-dir <directory>` to enable the local file-based automation protocol used by the interface tests. The `source` command accepts `history`, History rows report `section`, `notice`, `commit`, `file`, `spacer`, or `load-more` in `fileList`, and the `load-more` command activates the next page. `list-key enter` and `list-key space` exercise keyboard activation; `load-more-input mouse|enter|space` targets the paging row directly. Pagination keeps the selected item, diff position, and list scroll position while appending rows. Panel automation also exposes explorer-scrollbar, explorer-wheel, explorer-hover-file, and explorer-message-select-all.

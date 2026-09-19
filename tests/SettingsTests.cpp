@@ -25,6 +25,10 @@ int main()
     check(settings.string(L"Base").empty(), "missing string fallback");
     settings.setNumber(L"Source", 3);
     settings.setNumber(L"HistoryCommitCount", 25);
+    settings.setNumber(L"ExplorerLayout", 1);
+    settings.setNumber(L"ExplorerCommitWidth", 310);
+    settings.setNumber(L"ExplorerMessageWidth", 370);
+    settings.setNumber(L"ExplorerTopHeight", 290);
     settings.setString(L"Base", L"feature/проба\\line\nnext");
     WINDOWPLACEMENT placement{sizeof(placement)};
     placement.showCmd = SW_SHOWMAXIMIZED;
@@ -44,6 +48,9 @@ int main()
     auto loaded = Settings::loadFile(file);
     check(loaded.number(L"Source", 0) == 3, "number roundtrip");
     check(loaded.number(L"HistoryCommitCount", 0) == 25, "history commit count roundtrip");
+    check(loaded.number(L"ExplorerLayout", 0) == 1 && loaded.number(L"ExplorerCommitWidth", 0) == 310 &&
+            loaded.number(L"ExplorerMessageWidth", 0) == 370 && loaded.number(L"ExplorerTopHeight", 0) == 290,
+      "panel layout and divider sizes roundtrip");
     check(loaded.string(L"Base") == L"feature/проба\\line\nnext", "Unicode string roundtrip");
     WINDOWPLACEMENT restored{};
     check(loaded.windowPlacement(restored), "window placement roundtrip");

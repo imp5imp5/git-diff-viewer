@@ -58,10 +58,20 @@ std::string MainWindow::stateJson() const
                     ",\"statusAnimating\":" + (statusAnimationActive_ ? "true" : "false") + ",\"branch\":" + json(snapshot_.branch) +
                     ",\"previewCommit\":" + std::to_string(previewIndex_) +
                     ",\"source\":" + std::to_string(SendMessageW(source_, CB_GETCURSEL, 0, 0)) +
-                    ",\"view\":" + json(side_ ? L"side-by-side" : L"unified") + ",\"fullFile\":" + (fullFile_ ? "true" : "false") +
-                    ",\"plainText\":" + (diff_.plainText() ? "true" : "false") + ",\"darkTheme\":" + (darkTheme ? "true" : "false") +
-                    ",\"selectedFile\":" + json(selectedPath_) + ",\"selectedListKey\":" + json(selectedListKey_) +
+                    ",\"view\":" + json(side_ ? L"side-by-side" : L"unified") +
+                    ",\"layout\":" + json(explorerLayout_ ? L"panels" : L"classic") +
+                    ",\"fullFile\":" + (fullFile_ ? "true" : "false") + ",\"plainText\":" + (diff_.plainText() ? "true" : "false") +
+                    ",\"darkTheme\":" + (darkTheme ? "true" : "false") + ",\"selectedFile\":" + json(selectedPath_) +
+                    ",\"selectedListKey\":" + json(selectedListKey_) +
                     ",\"fileListTop\":" + std::to_string(SendMessageW(files_, LB_GETTOPINDEX, 0, 0)) +
+                    ",\"explorerGroupSelection\":" + std::to_string(SendMessageW(explorerCommits_, LB_GETCURSEL, 0, 0)) +
+                    ",\"explorerFileSelection\":" + std::to_string(SendMessageW(explorerFiles_, LB_GETCURSEL, 0, 0)) +
+                    ",\"explorerGroupTop\":" + std::to_string(SendMessageW(explorerCommits_, LB_GETTOPINDEX, 0, 0)) +
+                    ",\"explorerFileTop\":" + std::to_string(SendMessageW(explorerFiles_, LB_GETTOPINDEX, 0, 0)) +
+                    ",\"explorerCommitThumbTop\":" + std::to_string(explorerThumb(0).top) +
+                    ",\"explorerFileThumbTop\":" + std::to_string(explorerThumb(1).top) +
+                    ",\"explorerTooltip\":" + json(tooltipOwner_ == explorerFiles_ ? tooltipText_ : L"") +
+                    ",\"explorerMessageSelectionEnd\":" + std::to_string(HIWORD(SendMessageW(explorerMessage_, EM_GETSEL, 0, 0))) +
                     ",\"topRow\":" + std::to_string(diff_.topRow()) + ",\"rowCount\":" + std::to_string(diff_.rowCount()) +
                     ",\"visibleRowCount\":" + std::to_string(diff_.visibleRowCount()) +
                     ",\"activeChangeStart\":" + std::to_string(diff_.activeChangeStart()) +
@@ -109,6 +119,24 @@ std::string MainWindow::stateJson() const
     out += "{\"kind\":" + json(kind(item.kind)) + ",\"label\":" + json(item.label) + ",\"key\":" + json(item.key) +
            ",\"path\":" + json(item.file ? item.file->path() : L"") + "}";
   }
+  out += "],\"explorerGroups\":[";
+  first = true;
+  for (const auto &item : explorerGroups_)
+  {
+    if (!first)
+      out += ',';
+    first = false;
+    out += "{\"label\":" + json(item.label) + ",\"key\":" + json(item.key) + ",\"kind\":" + json(kind(item.kind)) + "}";
+  }
+  out += "],\"explorerFiles\":[";
+  first = true;
+  for (const auto &item : explorerFileItems_)
+  {
+    if (!first)
+      out += ',';
+    first = false;
+    out += "{\"path\":" + json(item.file ? item.file->path() : L"") + ",\"key\":" + json(item.key) + "}";
+  }
   out += "],\"commits\":[";
   first = true;
   for (const auto &c : series_)
@@ -122,7 +150,10 @@ std::string MainWindow::stateJson() const
   first = true;
   const std::pair<const wchar_t *, HWND> controls[] = {{L"refresh", refresh_}, {L"source", source_}, {L"view", view_},
     {L"full-file", fullFileButton_}, {L"theme", themeButton_}, {L"info", info_}, {L"base", base_}, {L"target", target_},
-    {L"compare", compare_}, {L"files", files_}, {L"commits", commits_}, {L"diff", diff_.handle()}, {L"status", status_}};
+    {L"compare", compare_}, {L"files", files_}, {L"commits", commits_}, {L"diff", diff_.handle()}, {L"status", status_},
+    {L"layout", layoutButton_}, {L"explorer-commits", explorerCommits_}, {L"explorer-message", explorerMessage_},
+    {L"explorer-files", explorerFiles_}, {L"explorer-commits-scroll", explorerBars_[0]}, {L"explorer-files-scroll", explorerBars_[1]},
+    {L"explorer-message-scroll", explorerBars_[2]}};
   for (const auto &c : controls)
   {
     RECT bounds{};
@@ -137,7 +168,17 @@ std::string MainWindow::stateJson() const
            ",\"y\":" + std::to_string(bounds.top) + ",\"width\":" + std::to_string(bounds.right - bounds.left) +
            ",\"height\":" + std::to_string(bounds.bottom - bounds.top) + "}";
   }
-  out += "],\"message\":" + json(diff_.messageText()) + ",\"visibleRows\":[";
+  out += "],\"explorerSplitters\":[";
+  for (int i = 0; i < 3; ++i)
+  {
+    if (i)
+      out += ',';
+    const auto &rect = explorerSplitters_[i];
+    out += "{\"x\":" + std::to_string(rect.left) + ",\"y\":" + std::to_string(rect.top) +
+           ",\"width\":" + std::to_string(rect.right - rect.left) + ",\"height\":" + std::to_string(rect.bottom - rect.top) + "}";
+  }
+  out +=
+    "],\"explorerMessageText\":" + json(label(explorerMessage_)) + ",\"message\":" + json(diff_.messageText()) + ",\"visibleRows\":[";
   first = true;
   const auto *file = diff_.file();
   const auto &rows = diff_.presentation();
@@ -256,6 +297,30 @@ void MainWindow::automationTick()
       if (side_ != (value == L"side-by-side"))
         toggle();
     }
+    else if (command == L"layout")
+    {
+      auto value = arg(0);
+      if (value != L"classic" && value != L"panels")
+        throw std::runtime_error("Layout must be classic or panels.");
+      setExplorerLayout(value == L"panels");
+    }
+    else if (command == L"select-explorer-group")
+    {
+      int index = integer(arg(0), 0, static_cast<int>(explorerGroups_.size()) - 1);
+      SendMessageW(explorerCommits_, LB_SETCURSEL, index, 0);
+      selectExplorerGroup(index);
+    }
+    else if (command == L"select-explorer-file")
+    {
+      int index = integer(arg(0), 0, static_cast<int>(explorerFileItems_.size()) - 1);
+      SendMessageW(explorerFiles_, LB_SETCURSEL, index, 0);
+      selectExplorerFile(index);
+    }
+    else if (command == L"explorer-splitter")
+    {
+      int index = integer(arg(0), 0, 2);
+      moveExplorerSplitter(index, integer(arg(1), 0, 4096));
+    }
     else if (command == L"full-file")
     {
       auto value = arg(0);
@@ -328,6 +393,8 @@ void MainWindow::automationTick()
         throw std::runtime_error("File is not in the current comparison.");
       SendMessageW(files_, LB_SETCURSEL, found, 0);
       selectFile();
+      if (explorerLayout_)
+        rebuildExplorer();
     }
     else if (command == L"select-list-item")
     {
@@ -336,6 +403,8 @@ void MainWindow::automationTick()
       int index = integer(arg(0), 0, static_cast<int>(fileListItems_.size()) - 1);
       SendMessageW(files_, LB_SETCURSEL, index, 0);
       selectFile();
+      if (explorerLayout_)
+        rebuildExplorer();
     }
     else if (command == L"hover-commit")
     {
@@ -361,6 +430,38 @@ void MainWindow::automationTick()
       int index = integer(arg(0), 0, static_cast<int>(series_.size()));
       SendMessageW(commits_, CB_SETCURSEL, index, 0);
       refresh(true);
+    }
+    else if (command == L"explorer-scrollbar")
+    {
+      int index = integer(arg(0), 0, 2);
+      auto action = arg(1);
+      if (action != L"top" && action != L"bottom")
+        throw std::runtime_error("Scrollbar action must be top or bottom.");
+      HWND bar = explorerBars_[index];
+      RECT area{}, thumb = explorerThumb(index);
+      GetClientRect(bar, &area);
+      int x = area.right / 2, start = (thumb.top + thumb.bottom) / 2;
+      int finish = action == L"top" ? 0 : std::max(0L, area.bottom - 1);
+      SendMessageW(bar, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, start));
+      SendMessageW(bar, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x, finish));
+      SendMessageW(bar, WM_LBUTTONUP, 0, MAKELPARAM(x, finish));
+    }
+    else if (command == L"explorer-hover-file")
+    {
+      int index = integer(arg(0), 0, static_cast<int>(explorerFileItems_.size()) - 1);
+      RECT row{};
+      SendMessageW(explorerFiles_, LB_GETITEMRECT, index, reinterpret_cast<LPARAM>(&row));
+      SendMessageW(explorerFiles_, WM_MOUSEMOVE, 0, MAKELPARAM(row.left + 8, (row.top + row.bottom) / 2));
+    }
+    else if (command == L"explorer-message-select-all")
+      SendMessageW(explorerMessage_, WM_CHAR, 1, 0);
+    else if (command == L"explorer-wheel")
+    {
+      HWND list = arg(0) == L"commits" ? explorerCommits_ : arg(0) == L"files" ? explorerFiles_ : nullptr;
+      if (!list)
+        throw std::runtime_error("Explorer wheel target must be commits or files.");
+      auto delta = static_cast<short>(integer(arg(1), -1200, 1200));
+      SendMessageW(list, WM_MOUSEWHEEL, MAKEWPARAM(0, delta), 0);
     }
     else if (command == L"scroll")
       diff_.scroll(integer(arg(0), 0, std::max(0, diff_.rowCount() - 1)));

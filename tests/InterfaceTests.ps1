@@ -47,6 +47,147 @@ try {
     $hints = $state.controls | Where-Object {$_.id -eq 'status'}
     Check ($hints.visible -and $hints.height -gt 0 -and $hints.y + $hints.height -le $state.height) 'Shortcut hints are visible inside the window'
     Check ($hints.text.Contains('Ctrl+Down/Up') -and $hints.text.Contains('Space Commit message')) 'File and commit message shortcuts are documented in the footer'
+    $panels=Invoke-App 'layout' @('panels')
+    Check ((@($panels.controls | Where-Object {$_.id -eq 'layout'})[0]).text -eq 'Wide Diff') 'Layout button is named Wide Diff'
+    Check ($panels.layout -eq 'panels' -and -not $panels.loading) 'Panel layout switches without Git reload'
+    $commitPane=$panels.controls | Where-Object {$_.id -eq 'explorer-commits'}
+    $messagePane=$panels.controls | Where-Object {$_.id -eq 'explorer-message'}
+    $filePane=$panels.controls | Where-Object {$_.id -eq 'explorer-files'}
+    $diffPane=$panels.controls | Where-Object {$_.id -eq 'diff'}
+    Check ($commitPane.visible -and $messagePane.visible -and $filePane.visible -and
+        $commitPane.x -lt $filePane.x -and $filePane.x -lt $messagePane.x -and
+        $diffPane.y -ge $filePane.y + $filePane.height -and $diffPane.x -eq $commitPane.x -and
+        $diffPane.width -ge $filePane.x + $filePane.width - $commitPane.x) 'Three upper panels and full-width diff'
+    $commitScroll=$panels.controls | Where-Object {$_.id -eq 'explorer-commits-scroll'}
+    $fileScroll=$panels.controls | Where-Object {$_.id -eq 'explorer-files-scroll'}
+    $messageScroll=$panels.controls | Where-Object {$_.id -eq 'explorer-message-scroll'}
+    Check ($commitScroll.visible -and $fileScroll.visible -and $messageScroll.visible -and
+        $commitScroll.x -gt $commitPane.x -and $fileScroll.x -gt $filePane.x -and
+        $messageScroll.x -gt $messagePane.x) 'Upper panels use their own scrollbars'
+    $x=$panels.explorerSplitters[0].x + 24
+    $panels=Invoke-App 'explorer-splitter' @('0',"$x")
+    Check ($panels.explorerSplitters[0].x -eq $x) 'Commit divider moves'
+    $x=$panels.explorerSplitters[1].x + 20
+    $panels=Invoke-App 'explorer-splitter' @('1',"$x")
+    Check ($panels.explorerSplitters[1].x -eq $x) 'Files divider moves'
+    $y=$panels.explorerSplitters[2].y + 20
+    $panels=Invoke-App 'explorer-splitter' @('2',"$y")
+    Check ($panels.explorerSplitters[2].y -eq $y) 'Diff divider moves'
+    $panels=Invoke-App 'source' @('history')
+    $panels=Wait-Idle
+    Check ($panels.explorerGroups[0].label -eq 'Unstaged' -and
+        $panels.explorerGroups[1].label -eq 'Staged' -and
+        $panels.explorerGroups[2].label -eq 'Ready to push') 'History starts with worktree and outgoing sections'
+    $panels=Invoke-App 'explorer-wheel' @('commits','-120')
+    Check ($panels.explorerGroupTop -gt 0) 'Commit wheel scrolls the visible list'
+    $panels=Invoke-App 'explorer-wheel' @('commits','120')
+    Check ($panels.explorerGroupTop -eq 0) 'Commit wheel scrolls back'
+    $panels=Invoke-App 'explorer-scrollbar' @('0','bottom')
+    Check ($panels.explorerGroupTop -gt 0) 'Dragging custom commit scrollbar moves the list'
+    $panels=Invoke-App 'explorer-scrollbar' @('0','top')
+    Check ($panels.explorerGroupTop -eq 0) 'Custom commit scrollbar returns to the top'
+    $originalTopSplit=$panels.explorerSplitters[2].y
+    $panels=Invoke-App 'explorer-splitter' @('2','220')
+    $panels=Invoke-App 'select-explorer-group' @('4')
+    $initialCommitThumb=$panels.explorerCommitThumbTop
+    1..6 | ForEach-Object {$panels=Invoke-App 'navigate-file' @('1')}
+    Check ($panels.explorerGroupTop -gt 0 -and
+        $panels.explorerCommitThumbTop -gt $initialCommitThumb) 'Ctrl+Down moves the commit scrollbar as rows leave view'
+    $downCommitThumb=$panels.explorerCommitThumbTop
+    1..6 | ForEach-Object {$panels=Invoke-App 'navigate-file' @('-1')}
+    Check ($panels.explorerCommitThumbTop -lt $downCommitThumb) 'Ctrl+Up moves the commit scrollbar back'
+    $panels=Invoke-App 'explorer-splitter' @('2',"$originalTopSplit")
+    $panels=Invoke-App 'select-explorer-group' @('2')
+    Check ($panels.explorerFiles.Count -gt 0 -and
+        $panels.explorerMessageText.Contains('files changed')) 'Ready to push section shows aggregate files and totals'
+    $panels=Invoke-App 'select-explorer-group' @('1')
+    Check ($panels.explorerFiles.Count -eq 9 -and $panels.selectedFile -eq $panels.explorerFiles[0].path -and
+        $panels.explorerMessageText.Contains('9 files changed')) 'Section selection fills files, summary, and diff'
+    Check ($panels.status -match 'files changed\s+-\d+\s+\+\d+') 'Status shows removed before added'
+    $panels=Invoke-App 'explorer-hover-file' @('0')
+    Check ($panels.explorerTooltip.Contains($panels.explorerFiles[0].path) -and
+        $panels.explorerTooltip -match '-\d+ \+\d+') 'File hint includes full path and totals'
+    $panels=Invoke-App 'explorer-message-select-all'
+    Check ($panels.explorerMessageSelectionEnd -eq $panels.explorerMessageText.Length) 'Ctrl+A selects the full commit message'
+    $panels=Invoke-App 'select-explorer-file' @('0')
+    $panels=Invoke-App 'scroll' @('2')
+    $rememberedTop=$panels.topRow
+    Invoke-App 'select-explorer-group' @('2') | Out-Null
+    $panels=Invoke-App 'select-explorer-group' @('1')
+    Check ($panels.explorerFileSelection -eq 0 -and $panels.topRow -eq $rememberedTop) 'Section restores its file and diff scroll'
+    $panels=Invoke-App 'select-explorer-file' @('8')
+    Invoke-App 'select-explorer-group' @('2') | Out-Null
+    $panels=Invoke-App 'select-explorer-group' @('1')
+    Check ($panels.explorerFileSelection -eq 8) 'Section remembers its selected file'
+    $panels=Invoke-App 'select-explorer-file' @('0')
+    $originalDivider=$panels.explorerSplitters[2].y
+    $panels=Invoke-App 'explorer-splitter' @('2','220')
+    $panels=Invoke-App 'explorer-scrollbar' @('1','bottom')
+    Check ($panels.explorerFileTop -gt 0) 'Dragging custom file scrollbar moves the list'
+    $panels=Invoke-App 'explorer-scrollbar' @('1','top')
+    Check ($panels.explorerFileTop -eq 0) 'Custom file scrollbar returns to the top'
+    $wheelSelection=$panels.selectedListKey
+    $panels=Invoke-App 'explorer-wheel' @('files','-120')
+    Check ($panels.explorerFileTop -gt 0 -and $panels.selectedListKey -eq $wheelSelection) 'File wheel scrolls without changing selection'
+    $panels=Invoke-App 'explorer-wheel' @('files','120')
+    Check ($panels.explorerFileTop -eq 0) 'File wheel scrolls back'
+    $initialFileThumb=$panels.explorerFileThumbTop
+    1..6 | ForEach-Object {$panels=Invoke-App 'navigate-file' @('1')}
+    Check ($panels.explorerFileTop -gt 0 -and
+        $panels.explorerFileThumbTop -gt $initialFileThumb) 'Ctrl+Down moves the file scrollbar as rows leave view'
+    $downFileThumb=$panels.explorerFileThumbTop
+    1..6 | ForEach-Object {$panels=Invoke-App 'navigate-file' @('-1')}
+    Check ($panels.explorerFileThumbTop -lt $downFileThumb) 'Ctrl+Up moves the file scrollbar back'
+    $panels=Invoke-App 'select-explorer-file' @('0')
+    $panels=Invoke-App 'explorer-scrollbar' @('1','top')
+    $panels=Invoke-App 'explorer-splitter' @('2',"$originalDivider")
+    $panels=Invoke-App 'navigate-file' @('1')
+    Check ($panels.explorerGroupSelection -eq 1 -and $panels.explorerFileSelection -eq 1 -and
+        $panels.selectedFile -eq $panels.explorerFiles[1].path) 'Ctrl+Down highlights the next visible file'
+    $panels=Invoke-App 'navigate-file' @('-1')
+    Check ($panels.explorerGroupSelection -eq 1 -and $panels.explorerFileSelection -eq 0) 'Ctrl+Up highlights the previous visible file'
+    $panels=Invoke-App 'select-explorer-file' @('8')
+    $panels=Invoke-App 'navigate-file' @('1')
+    Check ($panels.explorerGroupSelection -eq 2 -and $panels.explorerFileSelection -eq 0 -and
+        $panels.selectedFile -eq $panels.explorerFiles[0].path) 'Ctrl+Down advances to the next visible section'
+    $panels=Invoke-App 'navigate-file' @('-1')
+    Check ($panels.explorerGroupSelection -eq 1 -and $panels.explorerFileSelection -eq 8) 'Ctrl+Up returns to the previous section and its last file'
+    $commitIndex=-1
+    for($i=0;$i -lt $panels.explorerGroups.Count;$i++) {
+        if($panels.explorerGroups[$i].kind -eq 'commit') {$commitIndex=$i;break}
+    }
+    Check ($commitIndex -ge 0) 'History exposes commits'
+    $panels=Invoke-App 'select-explorer-group' @("$commitIndex")
+    Check ($panels.explorerFiles.Count -gt 0 -and $panels.explorerMessageText.Contains('Author:') -and
+        $panels.explorerMessageText.Contains('Date:')) 'Commit selection fills message and files'
+    Capture 'panels-history.png'
+    $panels=Invoke-App 'select-explorer-file' @('0')
+    Check ($panels.selectedFile -eq $panels.explorerFiles[0].path) 'File selection updates diff'
+    $panels=Invoke-App 'scroll' @('1')
+    $savedKey=$panels.selectedListKey
+    $savedTop=$panels.topRow
+    $panels=Invoke-App 'layout' @('classic')
+    Check ($panels.selectedListKey -eq $savedKey -and $panels.topRow -eq $savedTop -and -not $panels.loading) 'Classic layout restores selection and position'
+    $panels=Invoke-App 'layout' @('panels')
+    Check ($panels.selectedListKey -eq $savedKey -and $panels.topRow -eq $savedTop) 'Panel layout restores selection and position'
+    Invoke-App 'source' @('ready') | Out-Null
+    $panels=Wait-Idle
+    Check ($panels.explorerGroups[0].label -eq 'Ready to push' -and
+        $panels.explorerFiles.Count -gt 0) 'Ready to push has a combined section in panel layout'
+    Invoke-App 'source' @('commit') | Out-Null
+    $panels=Wait-Idle
+    Check ($panels.explorerGroups[0].label -eq 'Commit' -and
+        $panels.explorerMessageText.Contains('Author:')) 'Single commit works in panel layout'
+    Invoke-App 'source' @('range') | Out-Null
+    Invoke-App 'base' @('main') | Out-Null
+    Invoke-App 'target' @('HEAD') | Out-Null
+    Invoke-App 'compare' | Out-Null
+    $panels=Wait-Idle
+    Check (@($panels.explorerGroups | Where-Object {$_.kind -eq 'commit'}).Count -gt 0 -and
+        @($panels.explorerGroups | Where-Object {$_.kind -eq 'summary'}).Count -eq 1) 'Commit range works in panel layout'
+    Invoke-App 'layout' @('classic') | Out-Null
+    Invoke-App 'source' @('unstaged') | Out-Null
+    $state=Wait-Idle
     # Force a response sharing violation and verify retry without replaying zoom.
     $locked = [IO.File]::Open((Join-Path $root 'response.json'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
     $retryId = [guid]::NewGuid().ToString('N')
@@ -165,15 +306,15 @@ try {
     Check (-not $commitControl.visible) 'Ready to push uses the changed-files list instead of the commit dropdown'
     $readyMessage=Invoke-App 'select-list-item' @('2')
     Check ($readyMessage.plainText -and @($readyMessage.visibleRows | Where-Object {$_.meta -eq 'Add second feature'}).Count -eq 1) 'Ready commit heading opens its message'
-    Check ($readyMessage.status -like '1 files changed*+1*') 'Ready commit heading shows its statistics'
+    Check ($readyMessage.status -like '1 files changed*-*+1*') 'Ready commit heading shows its statistics'
     $readyFile=Invoke-App 'select-list-item' @('3')
     Check ($readyFile.selectedFile -eq 'second.txt' -and -not $readyFile.plainText) 'Ready commit file opens its commit diff'
-    Check ($readyFile.status -like '1 files changed*+1*') 'Ready commit file keeps its commit statistics'
+    Check ($readyFile.status -like '1 files changed*-*+1*') 'Ready commit file keeps its commit statistics'
     $readySummaryHeading=Invoke-App 'select-list-item' @('5')
     Check (@($readySummaryHeading.visibleRows | Where-Object {$_.meta -match '^[0-9a-f]{8}  Add first feature$'}).Count -eq 1 -and
            @($readySummaryHeading.visibleRows | Where-Object {$_.meta -match '^[0-9a-f]{8}  Add second feature$'}).Count -eq 1) 'Ready summary lists commit hashes and subjects'
     $readySummary=Invoke-App 'select-file' @('second.txt')
-    Check ($readySummary.selectedListKey -eq "summary`nsecond.txt" -and $readySummary.status -like '2 files changed*+2*') 'Ready summary file uses the combined diff and statistics'
+    Check ($readySummary.selectedListKey -eq "summary`nsecond.txt" -and $readySummary.status -like '2 files changed*-*+2*') 'Ready summary file uses the combined diff and statistics'
     Capture 'ready.png'
     Invoke-App 'base' @('HEAD~1') | Out-Null
     Invoke-App 'compare' | Out-Null
@@ -219,18 +360,18 @@ try {
            $state.fileList[4].kind -eq 'spacer' -and $state.fileList[5].kind -eq 'summary') 'Commit range list order'
     $message=Invoke-App 'select-list-item' @('0')
     Check ($message.plainText -and @($message.visibleRows | Where-Object {$_.meta -eq 'Add first feature'}).Count -eq 1) 'Range commit heading opens its message'
-    Check ($message.status -like '1 files changed*+1*') 'Commit heading shows statistics for that commit'
+    Check ($message.status -like '1 files changed*-*+1*') 'Commit heading shows statistics for that commit'
     $commitFile=Invoke-App 'select-list-item' @('1')
     Check (-not $commitFile.plainText -and $commitFile.selectedListKey.StartsWith("commit`n") -and $commitFile.selectedFile -eq 'first.txt') 'Range commit file opens its commit diff'
-    Check ($commitFile.status -like '1 files changed*+1*') 'Commit file keeps statistics for its commit'
+    Check ($commitFile.status -like '1 files changed*-*+1*') 'Commit file keeps statistics for its commit'
     $summaryFile=Invoke-App 'select-file' @('second.txt')
     Check ($summaryFile.selectedListKey -eq "summary`nsecond.txt") 'File selection prefers the combined range summary'
-    Check ($summaryFile.status -like '2 files changed*+2*') 'Summary file shows statistics for the complete range'
+    Check ($summaryFile.status -like '2 files changed*-*+2*') 'Summary file shows statistics for the complete range'
     $summaryFirst=Invoke-App 'navigate-file' @('-1')
     Check ($summaryFirst.selectedListKey -eq "summary`nfirst.txt") 'Ctrl list navigation selects summary files'
     $summary=Invoke-App 'navigate-file' @('-1')
     Check ($summary.selectedListKey -eq 'summary' -and $summary.selectedFile -eq '<<Summary>>') 'Ctrl list navigation selects the summary heading'
-    Check ($summary.status -like '2 files changed*+2*') 'Summary heading shows statistics for the complete range'
+    Check ($summary.status -like '2 files changed*-*+2*') 'Summary heading shows statistics for the complete range'
     Check (@($summary.visibleRows | Where-Object {$_.meta -match '^[0-9a-f]{8}  Add first feature$'}).Count -eq 1 -and
            @($summary.visibleRows | Where-Object {$_.meta -match '^[0-9a-f]{8}  Add second feature$'}).Count -eq 1) 'Range summary lists commit hashes and subjects'
     $commitFile=Invoke-App 'navigate-file' @('-1')
@@ -291,14 +432,24 @@ try {
     for($i=0;$i -lt $state.fileList.Count;$i++) {if($state.fileList[$i].key -eq "history-staged`napp.cpp") {$stagedAppIndex=$i;break}}
     Check ($stagedAppIndex -ge 0) 'History staged file is present'
     $beforeMore=Invoke-App 'select-list-item' @([string]$stagedAppIndex)
+    $panelPage=Invoke-App 'layout' @('panels')
+    $loadMoreGroup=-1
+    for($i=0;$i -lt $panelPage.explorerGroups.Count;$i++) {
+        if($panelPage.explorerGroups[$i].kind -eq 'load-more') {$loadMoreGroup=$i;break}
+    }
+    Check ($loadMoreGroup -ge 0) 'Panel History puts Load more at the end'
     Invoke-App 'scroll' @('2') | Out-Null
-    $loadingMore=Invoke-App 'load-more'
+    $loadingMore=Invoke-App 'select-explorer-group' @([string]$loadMoreGroup)
     Check ($loadingMore.loading -and $loadingMore.statusAnimating -and
            @($loadingMore.fileList | Where-Object {$_.kind -eq 'load-more' -and $_.label -eq 'Loading...'}).Count -eq 1) 'Automation activates Load more with status animation without clearing the list'
+    $loadMoreTop=$loadingMore.explorerGroupTop
     $state=Wait-Idle
     Check (@($state.fileList | Where-Object {$_.kind -eq 'commit' -and $_.key.StartsWith("history`n")}).Count -eq 20 -and
            @($state.fileList | Where-Object {$_.kind -eq 'load-more'}).Count -eq 1 -and -not $state.statusAnimating) 'Load more appends ten commits and stops status animation'
     Check ($state.selectedListKey -eq $beforeMore.selectedListKey -and $state.selectedFile -eq 'app.cpp' -and $state.topRow -eq 2) 'Load more preserves selection and diff position'
+    Check (@($state.explorerGroups | Where-Object {$_.kind -eq 'commit' -and $_.key.StartsWith('history')}).Count -eq 20) 'Panel History appends ten commits'
+    Check ($state.explorerGroupTop -eq $loadMoreTop) 'Load more keeps the commit list scroll position'
+    Invoke-App 'layout' @('classic') | Out-Null
     Invoke-App 'refresh' | Out-Null
     $state=Wait-Idle
     Check (@($state.fileList | Where-Object {$_.kind -eq 'commit' -and $_.key.StartsWith("history`n")}).Count -eq 20) 'History Refresh preserves the expanded limit'

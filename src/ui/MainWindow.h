@@ -68,7 +68,8 @@ private:
   void toggleCommitMessage();
   void loadMoreHistory();
   int messageReturnIndex_{-1}, messageReturnTop_{};
-  std::vector<FileListItem> fileListItems_;
+  std::vector<FileListItem> fileListItems_, explorerGroups_, explorerFileItems_;
+  std::unordered_map<const FileDiff *, int> fileItemIndex_;
   FileStatsMode fileStatsMode_{FileStatsMode::Auto};
   void sourceChanged();
   void toggle();
@@ -79,6 +80,16 @@ private:
   void drawStatus(const DRAWITEMSTRUCT &item) const;
   void drawSplitter(HDC dc) const;
   void moveSplitter(int x);
+  void rebuildExplorer();
+  void selectExplorerGroup(int index, bool preserveFile = false, bool selectLastFile = false);
+  void selectExplorerFile(int index);
+  void updateExplorerBar(int index);
+  void scrollExplorerBar(int index, int top);
+  RECT explorerThumb(int index) const;
+  static LRESULT CALLBACK explorerBarProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+  static LRESULT CALLBACK explorerMessageProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+  void setExplorerLayout(bool enabled);
+  void moveExplorerSplitter(int index, int position);
   static LRESULT CALLBACK comboProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   static LRESULT CALLBACK commitListProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   void screenshot();
@@ -88,9 +99,12 @@ private:
   void stopStatusAnimation();
   std::wstring filePathAt(int index) const;
   static LRESULT CALLBACK filesProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
-  HWND tooltip_{}, themeButton_{}, fullFileButton_{};
+  static LRESULT CALLBACK explorerListProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+  HWND tooltip_{}, themeButton_{}, fullFileButton_{}, layoutButton_{}, explorerCommits_{}, explorerMessage_{}, explorerFiles_{},
+    explorerBars_[3]{}, explorerCommitLabel_{}, explorerMessageLabel_{}, explorerFilesLabel_{};
   std::wstring tooltipText_, savedCommit_, infoTooltipText_;
   int tooltipIndex_{-1};
+  HWND tooltipOwner_{};
   HBRUSH backgroundBrush_{}, fieldBrush_{};
   void automationTick();
   void publishAutomationResponse();
@@ -107,6 +121,8 @@ private:
   std::wstring scrollContext_;
   std::wstring automationDirectory_;
   std::unordered_map<std::wstring, int> fileScrollPositions_;
+  std::unordered_map<std::wstring, std::wstring> explorerFileSelections_;
+  std::wstring activeExplorerGroupKey_;
   std::unordered_map<std::wstring, DiffDocument> fullFileDocuments_;
   std::string pendingResponse_;
   bool pendingClose_{};
@@ -117,9 +133,10 @@ private:
   const FileDiff *previewPreviousFile_{};
   bool previewPreviousPlain_{};
   int previewIndex_{-1}, previewTop_{};
-  int filePaneWidth_{}, splitterDragOffset_{};
-  RECT splitter_{};
-  bool draggingSplitter_{};
+  int filePaneWidth_{}, splitterDragOffset_{}, explorerCommitWidth_{300}, explorerMessageWidth_{360}, explorerTopHeight_{280},
+    explorerDragIndex_{-1};
+  RECT splitter_{}, explorerSplitters_[3]{};
+  bool draggingSplitter_{}, explorerLayout_{};
   bool automationHover_{};
   HWND commitPopup_{};
   std::vector<Commit> series_;
@@ -131,7 +148,7 @@ private:
   bool statusAnimationActive_{};
   size_t historyInitialLimit_{10}, historyLimit_{10};
   std::wstring fullFileLoadingKey_;
-  int historyListTop_{}, historyDiffTop_{}, statusAnimationPhase_{};
-  int fileListWheel_{};
+  int historyListTop_{}, historyExplorerTop_{}, historyDiffTop_{}, statusAnimationPhase_{};
+  int fileListWheel_{}, explorerWheel_[2]{}, explorerBarDrag_[3]{-1, -1, -1};
 };
 } // namespace gdv

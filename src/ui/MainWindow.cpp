@@ -33,7 +33,10 @@ enum
   NextChange,
   PreviousChange,
   Theme,
-  FullFile
+  FullFile,
+  ExplorerLayout,
+  ExplorerCommits,
+  ExplorerFiles
 };
 constexpr int minFilePaneWidth = 220;
 constexpr int minDiffPaneWidth = 300;
@@ -70,6 +73,74 @@ std::pair<size_t, size_t> changes(const DiffDocument &document)
   }
   return {added, removed};
 }
+void copyFileName(HWND owner, const std::wstring &path)
+{
+  auto memory = GlobalAlloc(GMEM_MOVEABLE, (path.size() + 1) * sizeof(wchar_t));
+  if (!memory)
+    return;
+  auto ptr = GlobalLock(memory);
+  if (ptr)
+  {
+    memcpy(ptr, path.c_str(), (path.size() + 1) * sizeof(wchar_t));
+    GlobalUnlock(memory);
+    if (OpenClipboard(owner))
+    {
+      EmptyClipboard();
+      if (SetClipboardData(CF_UNICODETEXT, memory))
+        memory = nullptr;
+      CloseClipboard();
+    }
+  }
+  if (memory)
+    GlobalFree(memory);
+}
+int editPageRows(HWND hwnd, HFONT font)
+{
+  RECT area{};
+  GetClientRect(hwnd, &area);
+  HDC dc = GetDC(hwnd);
+  auto old = SelectObject(dc, font);
+  TEXTMETRICW metric{};
+  GetTextMetricsW(dc, &metric);
+  SelectObject(dc, old);
+  ReleaseDC(hwnd, dc);
+  return std::max(1, static_cast<int>(area.bottom) / std::max(1, static_cast<int>(metric.tmHeight)));
+}
+void revealListSelection(HWND hwnd, int index)
+{
+  RECT area{};
+  GetClientRect(hwnd, &area);
+  int rowHeight = std::max(1, static_cast<int>(SendMessageW(hwnd, LB_GETITEMHEIGHT, 0, 0)));
+  int page = std::max(1, static_cast<int>(area.bottom) / rowHeight);
+  int top = static_cast<int>(SendMessageW(hwnd, LB_GETTOPINDEX, 0, 0));
+  if (index < top)
+    SendMessageW(hwnd, LB_SETTOPINDEX, index, 0);
+  else if (index >= top + page)
+    SendMessageW(hwnd, LB_SETTOPINDEX, index - page + 1, 0);
+}
+void scrollListWheel(HWND hwnd, WPARAM w, int &remainder)
+{
+  int delta = GET_WHEEL_DELTA_WPARAM(w);
+  MSG queued{};
+  while (PeekMessageW(&queued, hwnd, WM_MOUSEWHEEL, WM_MOUSEWHEEL, PM_REMOVE))
+    delta += GET_WHEEL_DELTA_WPARAM(queued.wParam);
+  remainder += delta;
+  int detents = remainder / WHEEL_DELTA;
+  remainder %= WHEEL_DELTA;
+  if (!detents)
+    return;
+  UINT wheelLines = 3;
+  SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &wheelLines, 0);
+  RECT area{};
+  GetClientRect(hwnd, &area);
+  int itemHeight = std::max(1, static_cast<int>(SendMessageW(hwnd, LB_GETITEMHEIGHT, 0, 0)));
+  int page = std::max(1, static_cast<int>(area.bottom - area.top) / itemHeight);
+  int step = wheelLines == WHEEL_PAGESCROLL ? page : static_cast<int>(wheelLines);
+  int count = static_cast<int>(SendMessageW(hwnd, LB_GETCOUNT, 0, 0));
+  int top = static_cast<int>(SendMessageW(hwnd, LB_GETTOPINDEX, 0, 0));
+  if (step > 0)
+    SendMessageW(hwnd, LB_SETTOPINDEX, std::clamp(top - detents * step, 0, std::max(0, count - page)), 0);
+}
 } // namespace
 MainWindow::~MainWindow()
 {
@@ -103,6 +174,10 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
   side_ = automationDirectory_.empty() && settings_.number(L"SideBySide", 0) != 0;
   darkTheme = !automationDirectory_.empty() || settings_.number(L"DarkTheme", 1) != 0;
   filePaneWidth_ = automationDirectory_.empty() ? static_cast<int>(std::min<DWORD>(settings_.number(L"FilePaneWidth", 0), 4096)) : 0;
+  explorerLayout_ = automationDirectory_.empty() && settings_.number(L"ExplorerLayout", 0) != 0;
+  explorerCommitWidth_ = static_cast<int>(std::clamp<DWORD>(settings_.number(L"ExplorerCommitWidth", 300), 160, 4096));
+  explorerMessageWidth_ = static_cast<int>(std::clamp<DWORD>(settings_.number(L"ExplorerMessageWidth", 360), 160, 4096));
+  explorerTopHeight_ = static_cast<int>(std::clamp<DWORD>(settings_.number(L"ExplorerTopHeight", 280), 140, 4096));
   WNDCLASSEXW wc{sizeof(wc)};
   wc.hInstance = instance;
   wc.lpfnWndProc = procedure;
@@ -215,6 +290,8 @@ void MainWindow::createControls()
   SendMessageW(view_, CB_SETCURSEL, side_ ? 1 : 0, 0);
   fullFileButton_ = control(L"BUTTON", L"Full file", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE, FullFile);
   themeButton_ = control(L"BUTTON", L"Light theme", WS_TABSTOP, Theme);
+  layoutButton_ = control(L"BUTTON", L"Wide Diff", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE, ExplorerLayout);
+  SendMessageW(layoutButton_, BM_SETCHECK, explorerLayout_ ? BST_CHECKED : BST_UNCHECKED, 0);
   baseLabel_ = control(L"STATIC", L"Base branch / ref", 0, 0);
   base_ = control(L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, Base);
   targetLabel_ = control(L"STATIC", L"Target / commit", 0, 0);
@@ -231,6 +308,22 @@ void MainWindow::createControls()
     SetWindowSubclass(commitPopup_, commitListProcedure, 1, reinterpret_cast<DWORD_PTR>(this));
   }
   fileLabel_ = control(L"STATIC", L"CHANGED FILES", 0, 0);
+  explorerCommitLabel_ = control(L"STATIC", L"COMMITS", 0, 0);
+  explorerMessageLabel_ = control(L"STATIC", L"COMMIT MESSAGE", 0, 0);
+  explorerFilesLabel_ = control(L"STATIC", L"FILES", 0, 0);
+  explorerCommits_ = control(L"LISTBOX", L"",
+    WS_TABSTOP | WS_BORDER | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS, ExplorerCommits);
+  explorerMessage_ = control(L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0);
+  explorerFiles_ = control(L"LISTBOX", L"",
+    WS_TABSTOP | WS_BORDER | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS, ExplorerFiles);
+  SetWindowSubclass(explorerCommits_, explorerListProcedure, 1, reinterpret_cast<DWORD_PTR>(this));
+  SetWindowSubclass(explorerFiles_, explorerListProcedure, 1, reinterpret_cast<DWORD_PTR>(this));
+  SetWindowSubclass(explorerMessage_, explorerMessageProcedure, 1, reinterpret_cast<DWORD_PTR>(this));
+  for (int i = 0; i < 3; ++i)
+  {
+    explorerBars_[i] = control(L"STATIC", L"", SS_NOTIFY, 0);
+    SetWindowSubclass(explorerBars_[i], explorerBarProcedure, static_cast<UINT_PTR>(i), reinterpret_cast<DWORD_PTR>(this));
+  }
   files_ = control(L"LISTBOX", L"",
     WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS, Files);
   SetWindowSubclass(files_, filesProcedure, 1, reinterpret_cast<DWORD_PTR>(this));
@@ -241,6 +334,8 @@ void MainWindow::createControls()
   tool.hwnd = hwnd_;
   tool.uId = reinterpret_cast<UINT_PTR>(files_);
   tool.lpszText = const_cast<wchar_t *>(L"");
+  SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
+  tool.uId = reinterpret_cast<UINT_PTR>(explorerFiles_);
   SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
   tool.uId = reinterpret_cast<UINT_PTR>(info_);
   tool.lpszText = LPSTR_TEXTCALLBACKW;
@@ -291,6 +386,8 @@ void MainWindow::updateFonts()
   SendMessageW(commits_, CB_SETITEMHEIGHT, 0, itemHeight);
   SendMessageW(commits_, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), itemHeight);
   SendMessageW(files_, LB_SETITEMHEIGHT, 0, itemHeight);
+  SendMessageW(explorerCommits_, LB_SETITEMHEIGHT, 0, itemHeight);
+  SendMessageW(explorerFiles_, LB_SETITEMHEIGHT, 0, itemHeight);
   // MoveWindow's height includes the dropdown, not the closed combobox field.
   // Native themed buttons have a one-pixel transparent inset. Match the visible
   // borders, not just the HWND rectangles, while accounting for the combo frame.
@@ -323,7 +420,8 @@ void MainWindow::layout()
   move(view_, pad + scale(284), pad + scale(1), scale(145), scale(160));
   move(fullFileButton_, pad + scale(441), pad, scale(100), row);
   move(themeButton_, pad + scale(553), pad, scale(115), row);
-  int infoX = pad + scale(680);
+  move(layoutButton_, pad + scale(680), pad, scale(90), row);
+  int infoX = pad + scale(782);
   move(info_, infoX, pad, width - infoX - pad, row);
   int y = pad + row + gap;
   auto mode = source(source_);
@@ -347,6 +445,45 @@ void MainWindow::layout()
   }
   ShowWindow(commits_, SW_HIDE);
   ShowWindow(commitLabel_, SW_HIDE);
+  for (auto h : {fileLabel_, files_})
+    ShowWindow(h, explorerLayout_ ? SW_HIDE : SW_SHOW);
+  for (auto h : {explorerCommitLabel_, explorerMessageLabel_, explorerFilesLabel_, explorerCommits_, explorerMessage_, explorerFiles_,
+         explorerBars_[0], explorerBars_[1], explorerBars_[2]})
+    ShowWindow(h, explorerLayout_ ? SW_SHOW : SW_HIDE);
+  if (explorerLayout_)
+  {
+    int contentWidth = std::max(1, width - pad * 2);
+    int minPane = scale(160), minDiffHeight = scale(180), minTop = scale(140);
+    int first = std::clamp(scale(explorerCommitWidth_), minPane, std::max(minPane, contentWidth - 2 * minPane - 2 * gap));
+    int second = std::clamp(scale(explorerMessageWidth_), minPane, std::max(minPane, contentWidth - first - minPane - 2 * gap));
+    int third = std::max(1, contentWidth - first - second - 2 * gap);
+    int available = std::max(1, height - y - footerHeight);
+    int top = std::clamp(scale(explorerTopHeight_), minTop, std::max(minTop, available - gap - minDiffHeight));
+    int listY = y + scale(25);
+    int listHeight = std::max(1, top - scale(25));
+    int barWidth = scale(13);
+    int x1 = pad + first, x2 = x1 + gap + second;
+    move(explorerCommitLabel_, pad, y, first, scale(22));
+    move(explorerCommits_, pad, listY, first - barWidth, listHeight);
+    move(explorerBars_[0], pad + first - barWidth, listY, barWidth, listHeight);
+    move(explorerFilesLabel_, x1 + gap, y, second, scale(22));
+    move(explorerFiles_, x1 + gap, listY, second - barWidth, listHeight);
+    move(explorerBars_[1], x1 + gap + second - barWidth, listY, barWidth, listHeight);
+    move(explorerMessageLabel_, x2 + gap, y, third, scale(22));
+    move(explorerMessage_, x2 + gap, listY, third - barWidth, listHeight);
+    move(explorerBars_[2], x2 + gap + third - barWidth, listY, barWidth, listHeight);
+    move(diff_.handle(), pad, y + top + gap, contentWidth, available - top - gap);
+    explorerSplitters_[0] = {x1, y, x1 + gap, y + top};
+    explorerSplitters_[1] = {x2, y, x2 + gap, y + top};
+    explorerSplitters_[2] = {pad, y + top, width - pad, y + top + gap};
+    SetRectEmpty(&splitter_);
+    move(status_, pad, height - scale(27), width - pad * 2, scale(22));
+    for (int i = 0; i < 3; ++i)
+      updateExplorerBar(i);
+    return;
+  }
+  for (auto &rect : explorerSplitters_)
+    SetRectEmpty(&rect);
   int fy = y;
   move(fileLabel_, pad, fy, left - pad, scale(22));
   fy += scale(25);
@@ -357,6 +494,23 @@ void MainWindow::layout()
 }
 void MainWindow::drawSplitter(HDC dc) const
 {
+  if (explorerLayout_)
+  {
+    auto brush = CreateSolidBrush(themeColor(ThemeColor::Border));
+    for (int i = 0; i < 3; ++i)
+    {
+      RECT line = explorerSplitters_[i];
+      if (IsRectEmpty(&line))
+        continue;
+      if (i == 2)
+        line.top = (line.top + line.bottom) / 2, line.bottom = line.top + std::max(1, MulDiv(1, dpi_, 96));
+      else
+        line.left = (line.left + line.right) / 2, line.right = line.left + std::max(1, MulDiv(1, dpi_, 96));
+      FillRect(dc, &line, brush);
+    }
+    DeleteObject(brush);
+    return;
+  }
   if (IsRectEmpty(&splitter_))
     return;
   RECT line = splitter_;
@@ -381,6 +535,268 @@ void MainWindow::moveSplitter(int x)
   filePaneWidth_ = MulDiv(position, 96, static_cast<int>(dpi_));
   layout();
   RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+}
+void MainWindow::setExplorerLayout(bool enabled)
+{
+  if (explorerLayout_ == enabled)
+    return;
+  int top = diff_.topRow();
+  explorerLayout_ = enabled;
+  tooltipIndex_ = -1;
+  tooltipOwner_ = nullptr;
+  SendMessageW(tooltip_, TTM_POP, 0, 0);
+  SendMessageW(layoutButton_, BM_SETCHECK, enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+  if (enabled)
+    rebuildExplorer();
+  layout();
+  diff_.scroll(top);
+  RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+}
+void MainWindow::moveExplorerSplitter(int index, int position)
+{
+  RECT client{};
+  GetClientRect(hwnd_, &client);
+  auto scale = [&](int n) { return MulDiv(n, static_cast<int>(dpi_), 96); };
+  int pad = scale(12), gap = scale(8), minimum = scale(160);
+  if (index == 0)
+    explorerCommitWidth_ =
+      MulDiv(std::clamp(position - pad, minimum, std::max(minimum, static_cast<int>(client.right) - 2 * pad - 2 * gap - 2 * minimum)),
+        96, dpi_);
+  else if (index == 1)
+    explorerMessageWidth_ = MulDiv(
+      std::clamp(position - static_cast<int>(explorerSplitters_[0].right), minimum,
+        std::max(minimum, static_cast<int>(client.right) - pad - static_cast<int>(explorerSplitters_[0].right) - gap - minimum)),
+      96, dpi_);
+  else
+    explorerTopHeight_ = MulDiv(std::clamp(position - static_cast<int>(explorerSplitters_[0].top), scale(140),
+                                  std::max(scale(140), static_cast<int>(client.bottom) - scale(36) -
+                                                         static_cast<int>(explorerSplitters_[0].top) - gap - scale(180))),
+      96, dpi_);
+  if ((index == 0 && scale(explorerCommitWidth_) == explorerSplitters_[0].left - pad) ||
+      (index == 1 && scale(explorerMessageWidth_) == explorerSplitters_[1].left - explorerSplitters_[0].right) ||
+      (index == 2 && scale(explorerTopHeight_) == explorerSplitters_[2].top - explorerSplitters_[0].top))
+    return;
+  layout();
+  InvalidateRect(hwnd_, nullptr, TRUE);
+}
+void MainWindow::rebuildExplorer()
+{
+  if (!explorerCommits_)
+    return;
+  std::wstring oldKey = selectedListKey_;
+  std::wstring oldPath = selectedPath_;
+  SendMessageW(explorerCommits_, WM_SETREDRAW, FALSE, 0);
+  SendMessageW(explorerCommits_, LB_RESETCONTENT, 0, 0);
+  explorerGroups_.clear();
+  auto add = [&](FileListItem item) {
+    explorerGroups_.push_back(std::move(item));
+    SendMessageW(explorerCommits_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(explorerGroups_.back().label.c_str()));
+  };
+  auto mode = source(source_);
+  if (mode == ChangeSource::History)
+  {
+    for (const auto &item : fileListItems_)
+      if ((item.kind == FileListItemKind::Section && item.group != FileListGroup::History) || item.kind == FileListItemKind::Commit ||
+          item.kind == FileListItemKind::LoadMore)
+        add(item);
+  }
+  else if (mode == ChangeSource::ReadyToPush || mode == ChangeSource::Range)
+  {
+    if (mode == ChangeSource::ReadyToPush)
+    {
+      FileListItem group{FileListItemKind::Section, nullptr, 0, 0, 0, L"Ready to push", L"ready-summary"};
+      group.document = &snapshot_.document;
+      add(std::move(group));
+    }
+    for (const auto &item : fileListItems_)
+      if (item.kind == FileListItemKind::Commit || (mode == ChangeSource::Range && item.kind == FileListItemKind::Summary))
+        add(item);
+    if (explorerGroups_.empty())
+    {
+      FileListItem group{FileListItemKind::Section, nullptr, 0, 0, 0, L"Summary", L"summary"};
+      group.document = &snapshot_.document;
+      add(std::move(group));
+    }
+  }
+  else
+  {
+    FileListItem group{FileListItemKind::Section, nullptr, 0, 0, 0,
+      mode == ChangeSource::Commit     ? L"Commit"
+      : mode == ChangeSource::Staged   ? L"Staged"
+      : mode == ChangeSource::Unstaged ? L"Unstaged"
+                                       : L"All local",
+      L"explorer-summary"};
+    group.document = &snapshot_.document;
+    add(std::move(group));
+  }
+  SendMessageW(explorerCommits_, WM_SETREDRAW, TRUE, 0);
+  InvalidateRect(explorerCommits_, nullptr, TRUE);
+  updateExplorerBar(0);
+  int selection = 0;
+  for (size_t i = 0; i < explorerGroups_.size(); ++i)
+  {
+    const auto &group = explorerGroups_[i];
+    std::wstring prefix = group.key + L"\n";
+    if (group.key == oldKey || oldKey.rfind(prefix, 0) == 0 ||
+        (group.group == FileListGroup::Unstaged && oldKey.rfind(L"history-unstaged\n", 0) == 0) ||
+        (group.group == FileListGroup::Staged && oldKey.rfind(L"history-staged\n", 0) == 0) ||
+        (group.group == FileListGroup::Outgoing && group.kind == FileListItemKind::Section &&
+          oldKey.rfind(L"history-outgoing-summary\n", 0) == 0))
+    {
+      selection = static_cast<int>(i);
+      break;
+    }
+  }
+  if (!explorerGroups_.empty())
+  {
+    SendMessageW(explorerCommits_, LB_SETCURSEL, selection, 0);
+    selectedListKey_ = oldKey;
+    selectedPath_ = oldPath;
+    selectExplorerGroup(selection, true);
+  }
+}
+void MainWindow::selectExplorerGroup(int index, bool preserveFile, bool selectLastFile)
+{
+  if (index < 0 || static_cast<size_t>(index) >= explorerGroups_.size())
+    return;
+  auto &group = explorerGroups_[static_cast<size_t>(index)];
+  if (group.kind == FileListItemKind::LoadMore)
+  {
+    loadMoreHistory();
+    return;
+  }
+  const DiffDocument *document = group.document;
+  if (!document && group.kind == FileListItemKind::Commit && group.commitIndex < snapshot_.commitDocuments.size())
+    document = &snapshot_.commitDocuments[group.commitIndex];
+  if (!document && group.kind == FileListItemKind::Summary)
+    document = &snapshot_.document;
+  std::wstring keepKey = preserveFile ? selectedListKey_ : L"";
+  if (!preserveFile)
+  {
+    auto remembered = explorerFileSelections_.find(scrollContext_ + L"\n" + group.key);
+    if (remembered != explorerFileSelections_.end())
+      keepKey = remembered->second;
+  }
+  activeExplorerGroupKey_ = group.key;
+  SendMessageW(explorerFiles_, WM_SETREDRAW, FALSE, 0);
+  SendMessageW(explorerFiles_, LB_RESETCONTENT, 0, 0);
+  explorerFileItems_.clear();
+  size_t maxAdded = 0, maxRemoved = 0, added = 0, removed = 0;
+  if (document)
+    for (const auto &file : document->files)
+    {
+      auto counts = changes(file);
+      added += counts.first;
+      removed += counts.second;
+      std::wstring key = group.key + L"\n" + file.path();
+      auto old = fileItemIndex_.find(&file);
+      if (old != fileItemIndex_.end())
+        key = fileListItems_[static_cast<size_t>(old->second)].key;
+      if (group.group == FileListGroup::Outgoing && group.kind == FileListItemKind::Section)
+        key = L"history-outgoing-summary\n" + file.path();
+      FileListItem item{FileListItemKind::File, &file, group.commitIndex, counts.first, counts.second,
+        std::wstring(1, statusLetter(file.status)) + L"   " + file.path(), std::move(key)};
+      item.group = group.group;
+      item.document = document;
+      item.commit = group.commit;
+      maxAdded = std::max(maxAdded, item.added);
+      maxRemoved = std::max(maxRemoved, item.removed);
+      explorerFileItems_.push_back(std::move(item));
+      SendMessageW(explorerFiles_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(explorerFileItems_.back().label.c_str()));
+    }
+  for (auto &item : explorerFileItems_)
+  {
+    item.maxAdded = maxAdded;
+    item.maxRemoved = maxRemoved;
+  }
+  SendMessageW(explorerFiles_, WM_SETREDRAW, TRUE, 0);
+  InvalidateRect(explorerFiles_, nullptr, TRUE);
+  updateExplorerBar(1);
+  size_t fileCount = document ? document->files.size() : 0;
+  group.added = added;
+  group.removed = removed;
+  std::wstring message;
+  if (group.commit)
+    message = group.commit->message;
+  else if (group.kind == FileListItemKind::Commit && group.commitIndex < snapshot_.commits.size())
+    message = snapshot_.commits[group.commitIndex].message;
+  else if (source(source_) == ChangeSource::Commit)
+    message = snapshot_.commitMessage;
+  else
+  {
+    message = group.label;
+    if (group.group == FileListGroup::Outgoing && fileCount == 0 && !snapshot_.history.outgoingNotice.empty())
+      message += L"\n\n" + snapshot_.history.outgoingNotice;
+  }
+  message += L"\n\n----------------------------------------\n" + std::to_wstring(fileCount) + L" files changed    -" +
+             std::to_wstring(removed) + L" +" + std::to_wstring(added);
+  std::wstring lines;
+  for (wchar_t c : message)
+  {
+    if (c == L'\n' && (lines.empty() || lines.back() != L'\r'))
+      lines += L'\r';
+    lines += c;
+  }
+  SetWindowTextW(explorerMessage_, lines.c_str());
+  SendMessageW(explorerMessage_, EM_SETSEL, 0, 0);
+  updateExplorerBar(2);
+  int selected = selectLastFile && !explorerFileItems_.empty() ? static_cast<int>(explorerFileItems_.size()) - 1 : 0;
+  for (size_t i = 0; i < explorerFileItems_.size(); ++i)
+    if (explorerFileItems_[i].key == keepKey)
+    {
+      selected = static_cast<int>(i);
+      break;
+    }
+  if (!explorerFileItems_.empty())
+  {
+    SendMessageW(explorerFiles_, LB_SETCURSEL, selected, 0);
+    selectExplorerFile(selected);
+  }
+  else
+  {
+    rememberFileScroll();
+    selectedListKey_ = group.key;
+    selectedPath_ = L"<<" + group.label + L">>";
+    for (size_t i = 0; i < fileListItems_.size(); ++i)
+      if (fileListItems_[i].key == group.key)
+      {
+        SendMessageW(files_, LB_SETCURSEL, i, 0);
+        break;
+      }
+    diff_.setMessage(message);
+    updateStatus();
+  }
+}
+void MainWindow::selectExplorerFile(int index)
+{
+  if (index < 0 || static_cast<size_t>(index) >= explorerFileItems_.size())
+    return;
+  endPreview();
+  rememberFileScroll();
+  const auto &item = explorerFileItems_[static_cast<size_t>(index)];
+  selectedListKey_ = item.key;
+  if (!activeExplorerGroupKey_.empty())
+    explorerFileSelections_[scrollContext_ + L"\n" + activeExplorerGroupKey_] = item.key;
+  selectedPath_ = item.file->path();
+  auto old = fileItemIndex_.find(item.file);
+  if (old != fileItemIndex_.end() && fileListItems_[static_cast<size_t>(old->second)].key == item.key)
+    SendMessageW(files_, LB_SETCURSEL, old->second, 0);
+  const FileDiff *file = item.file;
+  if (fullFile_)
+  {
+    auto found = fullFileDocuments_.find(selectedListKey_);
+    if (found != fullFileDocuments_.end() && !found->second.files.empty())
+      file = &found->second.files.front();
+  }
+  diff_.setFile(file);
+  auto saved = fileScrollPositions_.find(fileScrollKey(selectedListKey_));
+  if (saved != fileScrollPositions_.end())
+    diff_.scroll(saved->second);
+  else if (fullFile_ && file != item.file)
+    diff_.showFirstChange();
+  if (fullFile_ && file == item.file)
+    requestSelectedFullFile(item);
+  updateStatus();
 }
 void MainWindow::sourceChanged()
 {
@@ -433,6 +849,7 @@ void MainWindow::loadMoreHistory()
   endPreview();
   rememberFileScroll();
   historyListTop_ = static_cast<int>(SendMessageW(files_, LB_GETTOPINDEX, 0, 0));
+  historyExplorerTop_ = static_cast<int>(SendMessageW(explorerCommits_, LB_GETTOPINDEX, 0, 0));
   historyDiffTop_ = diff_.topRow();
   CompareRequest request{directory_, ChangeSource::History, {}, {}, false};
   request.historyLimit = 10;
@@ -512,10 +929,17 @@ void MainWindow::loaded()
     loadMoreLoading_ = false;
     diff_.setMessage(L"Unable to load changes\n\n" + result->error);
     fileListItems_.clear();
+    fileItemIndex_.clear();
+    explorerGroups_.clear();
+    explorerFileItems_.clear();
+    SendMessageW(explorerCommits_, LB_RESETCONTENT, 0, 0);
+    SendMessageW(explorerFiles_, LB_RESETCONTENT, 0, 0);
     fullFileDocuments_.clear();
     fullFileLoadingKey_.clear();
     snapshot_ = {};
     scrollContext_.clear();
+    explorerFileSelections_.clear();
+    activeExplorerGroupKey_.clear();
     selectedPath_.clear();
     selectedListKey_.clear();
     SendMessageW(files_, LB_RESETCONTENT, 0, 0);
@@ -532,7 +956,12 @@ void MainWindow::loaded()
   // Invalidate the view's pointer before replacing the owning document.
   rememberFileScroll();
   diff_.setFile(nullptr);
+  explorerGroups_.clear();
+  explorerFileItems_.clear();
+  SendMessageW(explorerCommits_, LB_RESETCONTENT, 0, 0);
+  SendMessageW(explorerFiles_, LB_RESETCONTENT, 0, 0);
   fileListItems_.clear();
+  fileItemIndex_.clear();
   bool historyAppend = result->request.historyAppend;
   if (!historyAppend)
   {
@@ -595,12 +1024,15 @@ void MainWindow::loaded()
   SendMessageW(tooltip_, TTM_POP, 0, 0);
   SendMessageW(files_, LB_RESETCONTENT, 0, 0);
   fileListItems_.clear();
+  fileItemIndex_.clear();
   int selected = -1, fallback = -1;
   auto addItem = [&](FileListItem item) {
     int index = static_cast<int>(fileListItems_.size());
     SendMessageW(files_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item.label.c_str()));
     if (!item.key.empty() && item.key == selectedListKey_)
       selected = index;
+    if (item.file)
+      fileItemIndex_[item.file] = index;
     fileListItems_.push_back(std::move(item));
     return index;
   };
@@ -799,6 +1231,16 @@ void MainWindow::loaded()
   if (!loading_)
     updateStatus();
   layout();
+  if (explorerLayout_)
+  {
+    rebuildExplorer();
+    if (historyAppend)
+    {
+      diff_.scroll(historyDiffTop_);
+      SendMessageW(explorerCommits_, LB_SETTOPINDEX, historyExplorerTop_, 0);
+      updateExplorerBar(0);
+    }
+  }
 }
 void MainWindow::navigateList(int direction, bool focusDiff)
 {
@@ -806,6 +1248,32 @@ void MainWindow::navigateList(int direction, bool focusDiff)
     SetFocus(diff_.handle());
   if (loading_ || fileListItems_.empty() || !direction)
     return;
+  if (explorerLayout_)
+  {
+    int group = static_cast<int>(SendMessageW(explorerCommits_, LB_GETCURSEL, 0, 0));
+    int file = static_cast<int>(SendMessageW(explorerFiles_, LB_GETCURSEL, 0, 0));
+    int count = static_cast<int>(explorerFileItems_.size());
+    if ((direction > 0 && file + 1 < count) || (direction < 0 && file > 0))
+    {
+      int next = file + direction;
+      SendMessageW(explorerFiles_, LB_SETCURSEL, next, 0);
+      revealListSelection(explorerFiles_, next);
+      updateExplorerBar(1);
+      selectExplorerFile(next);
+    }
+    else
+    {
+      int next = group + direction;
+      if (next < 0 || static_cast<size_t>(next) >= explorerGroups_.size() ||
+          explorerGroups_[static_cast<size_t>(next)].kind == FileListItemKind::LoadMore)
+        return;
+      SendMessageW(explorerCommits_, LB_SETCURSEL, next, 0);
+      revealListSelection(explorerCommits_, next);
+      updateExplorerBar(0);
+      selectExplorerGroup(next, false, direction < 0);
+    }
+    return;
+  }
   int current = static_cast<int>(SendMessageW(files_, LB_GETCURSEL, 0, 0));
   if (current < 0)
     current = direction < 0 ? static_cast<int>(fileListItems_.size()) : -1;
@@ -1051,8 +1519,20 @@ void MainWindow::requestSelectedFullFile(const FileListItem &item)
 void MainWindow::updateStatus()
 {
   const DiffDocument *document = &snapshot_.document;
+  if (explorerLayout_)
+  {
+    int group = static_cast<int>(SendMessageW(explorerCommits_, LB_GETCURSEL, 0, 0));
+    if (group >= 0 && static_cast<size_t>(group) < explorerGroups_.size())
+    {
+      const auto &item = explorerGroups_[static_cast<size_t>(group)];
+      if (item.document)
+        document = item.document;
+      else if (item.kind == FileListItemKind::Commit && item.commitIndex < snapshot_.commitDocuments.size())
+        document = &snapshot_.commitDocuments[item.commitIndex];
+    }
+  }
   int index = static_cast<int>(SendMessageW(files_, LB_GETCURSEL, 0, 0));
-  if (index >= 0 && static_cast<size_t>(index) < fileListItems_.size())
+  if (!explorerLayout_ && index >= 0 && static_cast<size_t>(index) < fileListItems_.size())
   {
     const auto &item = fileListItems_[static_cast<size_t>(index)];
     if (item.document)
@@ -1063,14 +1543,21 @@ void MainWindow::updateStatus()
       document = &snapshot_.commitDocuments[item.commitIndex];
   }
   size_t added = 0, removed = 0;
-  for (const auto &file : document->files)
+  int group = static_cast<int>(SendMessageW(explorerCommits_, LB_GETCURSEL, 0, 0));
+  if (explorerLayout_ && group >= 0 && static_cast<size_t>(group) < explorerGroups_.size())
   {
-    auto counts = changes(file);
-    added += counts.first;
-    removed += counts.second;
+    added = explorerGroups_[static_cast<size_t>(group)].added;
+    removed = explorerGroups_[static_cast<size_t>(group)].removed;
   }
+  else
+    for (const auto &file : document->files)
+    {
+      auto counts = changes(file);
+      added += counts.first;
+      removed += counts.second;
+    }
   auto status =
-    std::to_wstring(document->files.size()) + L" files changed    +" + std::to_wstring(added) + L"    −" + std::to_wstring(removed);
+    std::to_wstring(document->files.size()) + L" files changed    -" + std::to_wstring(removed) + L"    +" + std::to_wstring(added);
   if (!snapshot_.notice.empty())
     status += L"    " + snapshot_.notice;
   else
@@ -1213,13 +1700,14 @@ LRESULT CALLBACK MainWindow::comboProcedure(HWND hwnd, UINT msg, WPARAM w, LPARA
 }
 void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
 {
-  if (item.CtlID != Files && item.CtlID != Commits && item.CtlID != Source && item.CtlID != View)
+  if (item.CtlID != Files && item.CtlID != ExplorerCommits && item.CtlID != ExplorerFiles && item.CtlID != Commits &&
+      item.CtlID != Source && item.CtlID != View)
     return;
   int saved = SaveDC(item.hDC);
   RECT client{};
   GetClientRect(item.hwndItem, &client);
   IntersectClipRect(item.hDC, item.rcItem.left, item.rcItem.top, item.rcItem.right, item.rcItem.bottom);
-  if (item.CtlID == Files)
+  if (item.CtlID == Files || item.CtlID == ExplorerCommits || item.CtlID == ExplorerFiles)
     IntersectClipRect(item.hDC, client.left, client.top, client.right, client.bottom);
   bool selected = (item.itemState & ODS_SELECTED) != 0;
   auto rowBrush = CreateSolidBrush(themeColor(selected ? ThemeColor::ListSelection : ThemeColor::Surface));
@@ -1231,8 +1719,12 @@ void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
   if (item.itemID != static_cast<UINT>(-1))
   {
     bool commit = item.CtlID == Commits;
-    bool combo = item.CtlID != Files;
-    const FileListItem *listItem = !combo && item.itemID < fileListItems_.size() ? &fileListItems_[item.itemID] : nullptr;
+    bool combo = item.CtlID == Commits || item.CtlID == Source || item.CtlID == View;
+    const auto *items = item.CtlID == Files             ? &fileListItems_
+                        : item.CtlID == ExplorerCommits ? &explorerGroups_
+                        : item.CtlID == ExplorerFiles   ? &explorerFileItems_
+                                                        : nullptr;
+    const FileListItem *listItem = items && item.itemID < items->size() ? &(*items)[item.itemID] : nullptr;
     if (listItem && listItem->kind == FileListItemKind::Spacer)
     {
       RestoreDC(item.hDC, saved);
@@ -1305,7 +1797,8 @@ void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
           SIZE extent{};
           GetTextExtentPoint32W(item.hDC, value.c_str(), static_cast<int>(value.size()), &extent);
           RECT column{textRect.right - extent.cx, textRect.top, textRect.right, textRect.bottom};
-          SetTextColor(item.hDC, themeColor(role));
+          SetTextColor(item.hDC,
+            selected ? (role == ThemeColor::RemovedIndicator ? RGB(255, 208, 192) : RGB(208, 255, 192)) : themeColor(role));
           DrawTextW(item.hDC, value.c_str(), static_cast<int>(value.size()), &column,
             DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
           textRect.right = column.left;
@@ -1339,7 +1832,9 @@ void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
             while (level < 7 && count > limits[level])
               ++level;
             wchar_t glyph = static_cast<wchar_t>(0x2581 + level);
-            SetTextColor(item.hDC, themeColor(count ? role : selected ? ThemeColor::ListSelection : ThemeColor::Surface));
+            SetTextColor(item.hDC,
+              count ? (selected ? (role == ThemeColor::RemovedIndicator ? RGB(255, 208, 192) : RGB(208, 255, 192)) : themeColor(role))
+                    : themeColor(selected ? ThemeColor::ListSelection : ThemeColor::Surface));
             DrawTextW(item.hDC, &glyph, 1, &indicator, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             OffsetRect(&indicator, cell, 0);
           };
@@ -1355,7 +1850,8 @@ void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
             GetTextExtentPoint32W(item.hDC, widest.c_str(), static_cast<int>(widest.size()), &extent);
             RECT column{textRect.right - extent.cx, textRect.top, textRect.right, textRect.bottom};
             std::wstring value = sign + std::to_wstring(count);
-            SetTextColor(item.hDC, themeColor(role));
+            SetTextColor(item.hDC,
+              selected ? (role == ThemeColor::RemovedIndicator ? RGB(255, 208, 192) : RGB(208, 255, 192)) : themeColor(role));
             DrawTextW(item.hDC, value.c_str(), static_cast<int>(value.size()), &column,
               DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
             textRect.right = column.left;
@@ -1379,7 +1875,7 @@ void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
         if (commitHeader)
         {
           SIZE hashWidth{}, spacesWidth{};
-          GetTextExtentPoint32W(item.hDC, code.c_str(), static_cast<int>(code.size()), &hashWidth);
+          GetTextExtentPoint32W(item.hDC, L"00000000", 8, &hashWidth);
           GetTextExtentPoint32W(item.hDC, L"   ", 3, &spacesWidth);
           prefix.right = textRect.left + hashWidth.cx + spacesWidth.cx;
         }
@@ -1479,6 +1975,10 @@ void MainWindow::saveSettings()
   settings_.setNumber(L"FontSize", diff_.fontSize());
   settings_.setNumber(L"DarkTheme", darkTheme);
   settings_.setNumber(L"FilePaneWidth", static_cast<DWORD>(filePaneWidth_));
+  settings_.setNumber(L"ExplorerLayout", explorerLayout_);
+  settings_.setNumber(L"ExplorerCommitWidth", static_cast<DWORD>(explorerCommitWidth_));
+  settings_.setNumber(L"ExplorerMessageWidth", static_cast<DWORD>(explorerMessageWidth_));
+  settings_.setNumber(L"ExplorerTopHeight", static_cast<DWORD>(explorerTopHeight_));
   settings_.setNumber(L"HistoryCommitCount", static_cast<DWORD>(historyInitialLimit_));
   const wchar_t *statsModes[] = {L"none", L"bars", L"numbers", L"auto"};
   settings_.setString(L"FileStatsMode", statsModes[static_cast<size_t>(fileStatsMode_)]);
@@ -1543,32 +2043,223 @@ std::wstring MainWindow::filePathAt(int index) const
     return {};
   return fileListItems_[static_cast<size_t>(index)].file->path();
 }
+RECT MainWindow::explorerThumb(int index) const
+{
+  HWND bar = explorerBars_[index];
+  HWND target = index == 0 ? explorerCommits_ : index == 1 ? explorerFiles_ : explorerMessage_;
+  RECT track{};
+  GetClientRect(bar, &track);
+  if (!target)
+    return track;
+  RECT area{};
+  GetClientRect(target, &area);
+  int count = 0, top = 0, page = 1;
+  if (index == 2)
+  {
+    count = static_cast<int>(SendMessageW(target, EM_GETLINECOUNT, 0, 0));
+    top = static_cast<int>(SendMessageW(target, EM_GETFIRSTVISIBLELINE, 0, 0));
+    page = editPageRows(target, font_);
+  }
+  else
+  {
+    count = static_cast<int>(SendMessageW(target, LB_GETCOUNT, 0, 0));
+    top = static_cast<int>(SendMessageW(target, LB_GETTOPINDEX, 0, 0));
+    page = std::max(1, static_cast<int>(area.bottom) / std::max(1, static_cast<int>(SendMessageW(target, LB_GETITEMHEIGHT, 0, 0))));
+  }
+  int height = track.bottom - track.top;
+  if (count <= page || height <= 0)
+    return track;
+  int thumbHeight = std::clamp(MulDiv(height, page, count), static_cast<int>(track.right - track.left), height);
+  int travel = height - thumbHeight;
+  int maximum = std::max(1, count - page);
+  int y = track.top + MulDiv(std::clamp(top, 0, maximum), travel, maximum);
+  return {track.left, y, track.right, y + thumbHeight};
+}
+void MainWindow::updateExplorerBar(int index)
+{
+  if (explorerBars_[index])
+    InvalidateRect(explorerBars_[index], nullptr, FALSE);
+}
+void MainWindow::scrollExplorerBar(int index, int top)
+{
+  HWND target = index == 0 ? explorerCommits_ : index == 1 ? explorerFiles_ : explorerMessage_;
+  if (index == 2)
+  {
+    int current = static_cast<int>(SendMessageW(target, EM_GETFIRSTVISIBLELINE, 0, 0));
+    SendMessageW(target, EM_LINESCROLL, 0, top - current);
+  }
+  else
+    SendMessageW(target, LB_SETTOPINDEX, top, 0);
+  updateExplorerBar(index);
+}
+LRESULT CALLBACK MainWindow::explorerBarProcedure(HWND hwnd, UINT msg, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data)
+{
+  auto self = reinterpret_cast<MainWindow *>(data);
+  int index = static_cast<int>(id);
+  if (msg == WM_PAINT || msg == WM_PRINTCLIENT)
+  {
+    PAINTSTRUCT ps{};
+    HDC dc = msg == WM_PAINT ? BeginPaint(hwnd, &ps) : reinterpret_cast<HDC>(w);
+    RECT track{};
+    GetClientRect(hwnd, &track);
+    FillRect(dc, &track, self->fieldBrush_);
+    RECT thumb = self->explorerThumb(index);
+    auto brush = CreateSolidBrush(themeColor(ThemeColor::Border));
+    FillRect(dc, &thumb, brush);
+    DeleteObject(brush);
+    if (msg == WM_PAINT)
+      EndPaint(hwnd, &ps);
+    return 0;
+  }
+  if (msg == WM_LBUTTONDOWN || msg == WM_MOUSEMOVE)
+  {
+    if (msg == WM_LBUTTONDOWN)
+    {
+      RECT thumb = self->explorerThumb(index);
+      int y = GET_Y_LPARAM(l);
+      self->explorerBarDrag_[index] = y >= thumb.top && y < thumb.bottom ? y - thumb.top : (thumb.bottom - thumb.top) / 2;
+      SetCapture(hwnd);
+    }
+    if (self->explorerBarDrag_[index] >= 0)
+    {
+      RECT track{}, thumb = self->explorerThumb(index);
+      GetClientRect(hwnd, &track);
+      int travel = (track.bottom - track.top) - (thumb.bottom - thumb.top);
+      if (travel > 0)
+      {
+        HWND target = index == 0 ? self->explorerCommits_ : index == 1 ? self->explorerFiles_ : self->explorerMessage_;
+        RECT area{};
+        GetClientRect(target, &area);
+        int count = index == 2 ? static_cast<int>(SendMessageW(target, EM_GETLINECOUNT, 0, 0))
+                               : static_cast<int>(SendMessageW(target, LB_GETCOUNT, 0, 0));
+        int page =
+          index == 2
+            ? editPageRows(target, self->font_)
+            : std::max(1, static_cast<int>(area.bottom) / std::max(1, static_cast<int>(SendMessageW(target, LB_GETITEMHEIGHT, 0, 0))));
+        int maximum = std::max(0, count - page);
+        int y = std::clamp(GET_Y_LPARAM(l) - self->explorerBarDrag_[index], 0, travel);
+        self->scrollExplorerBar(index, MulDiv(y, maximum, travel));
+      }
+    }
+    return 0;
+  }
+  if (msg == WM_LBUTTONUP || msg == WM_CAPTURECHANGED)
+  {
+    self->explorerBarDrag_[index] = -1;
+    if (msg == WM_LBUTTONUP && GetCapture() == hwnd)
+      ReleaseCapture();
+    return 0;
+  }
+  if (msg == WM_MOUSEWHEEL)
+  {
+    HWND target = index == 0 ? self->explorerCommits_ : index == 1 ? self->explorerFiles_ : self->explorerMessage_;
+    SendMessageW(target, msg, w, l);
+    self->updateExplorerBar(index);
+    return 0;
+  }
+  if (msg == WM_NCDESTROY)
+    RemoveWindowSubclass(hwnd, explorerBarProcedure, id);
+  return DefSubclassProc(hwnd, msg, w, l);
+}
+LRESULT CALLBACK MainWindow::explorerMessageProcedure(HWND hwnd, UINT msg, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data)
+{
+  auto self = reinterpret_cast<MainWindow *>(data);
+  if ((msg == WM_KEYDOWN && (GetKeyState(VK_CONTROL) & 0x8000) && (w == 'A' || w == 'a')) || (msg == WM_CHAR && w == 1))
+  {
+    SendMessageW(hwnd, EM_SETSEL, 0, -1);
+    return 0;
+  }
+  auto result = DefSubclassProc(hwnd, msg, w, l);
+  if (msg == WM_MOUSEWHEEL || msg == WM_VSCROLL || msg == WM_KEYDOWN || msg == WM_SIZE)
+    self->updateExplorerBar(2);
+  if (msg == WM_NCDESTROY)
+    RemoveWindowSubclass(hwnd, explorerMessageProcedure, id);
+  return result;
+}
+LRESULT CALLBACK MainWindow::explorerListProcedure(HWND hwnd, UINT msg, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data)
+{
+  auto self = reinterpret_cast<MainWindow *>(data);
+  bool commits = hwnd == self->explorerCommits_;
+  int bar = commits ? 0 : 1;
+  if (msg == WM_MOUSEWHEEL)
+  {
+    int &remainder = self->explorerWheel_[bar];
+    scrollListWheel(hwnd, w, remainder);
+    self->updateExplorerBar(bar);
+    self->tooltipIndex_ = -1;
+    SendMessageW(self->tooltip_, TTM_POP, 0, 0);
+    return 0;
+  }
+  if (!commits && msg == WM_MOUSEMOVE)
+  {
+    auto hit = SendMessageW(hwnd, LB_ITEMFROMPOINT, 0, l);
+    int index = HIWORD(hit) ? -1 : LOWORD(hit);
+    if (index != self->tooltipIndex_ || self->tooltipOwner_ != hwnd)
+    {
+      self->tooltipIndex_ = index;
+      self->tooltipOwner_ = hwnd;
+      self->tooltipText_.clear();
+      if (index >= 0 && static_cast<size_t>(index) < self->explorerFileItems_.size())
+      {
+        const auto &item = self->explorerFileItems_[static_cast<size_t>(index)];
+        self->tooltipText_ = (std::filesystem::path(self->snapshot_.root) / item.file->path()).wstring() + L"    -" +
+                             std::to_wstring(item.removed) + L" +" + std::to_wstring(item.added);
+      }
+      SendMessageW(self->tooltip_, TTM_POP, 0, 0);
+      TOOLINFOW tool{sizeof(tool)};
+      tool.hwnd = self->hwnd_;
+      tool.uId = reinterpret_cast<UINT_PTR>(hwnd);
+      tool.lpszText = self->tooltipText_.data();
+      SendMessageW(self->tooltip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
+    }
+  }
+  if (!commits && msg == WM_CONTEXTMENU)
+  {
+    POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+    int index = -1;
+    if (point.x == -1 && point.y == -1)
+    {
+      index = static_cast<int>(SendMessageW(hwnd, LB_GETCURSEL, 0, 0));
+      RECT row{};
+      if (index >= 0 && SendMessageW(hwnd, LB_GETITEMRECT, index, reinterpret_cast<LPARAM>(&row)) != LB_ERR)
+      {
+        point = {row.left + 12, row.bottom};
+        ClientToScreen(hwnd, &point);
+      }
+    }
+    else
+    {
+      POINT client = point;
+      ScreenToClient(hwnd, &client);
+      auto hit = SendMessageW(hwnd, LB_ITEMFROMPOINT, 0, MAKELPARAM(client.x, client.y));
+      index = HIWORD(hit) ? -1 : LOWORD(hit);
+    }
+    if (index < 0 || static_cast<size_t>(index) >= self->explorerFileItems_.size())
+      return 0;
+    SendMessageW(hwnd, LB_SETCURSEL, index, 0);
+    SetFocus(hwnd);
+    self->selectExplorerFile(index);
+    HMENU menu = CreatePopupMenu();
+    AppendMenuW(menu, MF_STRING, 1, L"Copy File Name");
+    int command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, self->hwnd_, nullptr);
+    DestroyMenu(menu);
+    if (command == 1)
+      copyFileName(hwnd, self->explorerFileItems_[static_cast<size_t>(index)].file->path());
+    return 0;
+  }
+  auto result = DefSubclassProc(hwnd, msg, w, l);
+  if (msg == WM_VSCROLL || msg == LB_SETTOPINDEX || msg == LB_SETCURSEL || msg == WM_KEYDOWN || msg == WM_SIZE)
+    self->updateExplorerBar(bar);
+  if (msg == WM_NCDESTROY)
+    RemoveWindowSubclass(hwnd, explorerListProcedure, id);
+  return result;
+}
 LRESULT CALLBACK MainWindow::filesProcedure(HWND hwnd, UINT msg, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data)
 {
   auto self = reinterpret_cast<MainWindow *>(data);
   if (msg == WM_MOUSEWHEEL)
   {
-    int delta = GET_WHEEL_DELTA_WPARAM(w);
-    MSG queued{};
-    while (PeekMessageW(&queued, hwnd, WM_MOUSEWHEEL, WM_MOUSEWHEEL, PM_REMOVE))
-      delta += GET_WHEEL_DELTA_WPARAM(queued.wParam);
-    self->fileListWheel_ += delta;
-    int detents = self->fileListWheel_ / WHEEL_DELTA;
-    self->fileListWheel_ %= WHEEL_DELTA;
-    if (detents)
-    {
-      UINT wheelLines = 3;
-      SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &wheelLines, 0);
-      RECT area{};
-      GetClientRect(hwnd, &area);
-      int itemHeight = std::max(1, static_cast<int>(SendMessageW(hwnd, LB_GETITEMHEIGHT, 0, 0)));
-      int page = std::max(1, static_cast<int>(area.bottom - area.top) / itemHeight);
-      int step = wheelLines == WHEEL_PAGESCROLL ? page : static_cast<int>(wheelLines);
-      int count = static_cast<int>(SendMessageW(hwnd, LB_GETCOUNT, 0, 0));
-      int top = static_cast<int>(SendMessageW(hwnd, LB_GETTOPINDEX, 0, 0));
-      if (step > 0)
-        SendMessageW(hwnd, LB_SETTOPINDEX, std::clamp(top - detents * step, 0, std::max(0, count - page)), 0);
-    }
+    scrollListWheel(hwnd, w, self->fileListWheel_);
     self->tooltipIndex_ = -1;
     SendMessageW(self->tooltip_, TTM_POP, 0, 0);
     return 0;
@@ -1757,7 +2448,7 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
     case WM_CTLCOLORBTN:
     {
       auto dc = reinterpret_cast<HDC>(w);
-      bool field = msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORLISTBOX;
+      bool field = msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORLISTBOX || reinterpret_cast<HWND>(l) == explorerMessage_;
       SetTextColor(dc, themeColor(ThemeColor::Text));
       SetBkColor(dc, themeColor(field ? ThemeColor::Surface : ThemeColor::Window));
       return reinterpret_cast<LRESULT>(field ? fieldBrush_ : backgroundBrush_);
@@ -1773,13 +2464,14 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
       }
       if (hdr->code == NM_CUSTOMDRAW &&
           (hdr->hwndFrom == refresh_ || hdr->hwndFrom == compare_ || hdr->hwndFrom == themeButton_ ||
-            hdr->hwndFrom == fullFileButton_) &&
+            hdr->hwndFrom == fullFileButton_ || hdr->hwndFrom == layoutButton_) &&
           darkTheme)
       {
         auto draw = reinterpret_cast<NMCUSTOMDRAW *>(l);
         if (draw->dwDrawStage == CDDS_PREPAINT)
         {
-          bool checked = hdr->hwndFrom == fullFileButton_ && SendMessageW(fullFileButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+          bool checked = (hdr->hwndFrom == fullFileButton_ || hdr->hwndFrom == layoutButton_) &&
+                         SendMessageW(hdr->hwndFrom, BM_GETCHECK, 0, 0) == BST_CHECKED;
           auto buttonBrush = checked ? CreateSolidBrush(themeColor(ThemeColor::ListSelection)) : fieldBrush_;
           FillRect(draw->hdc, &draw->rc, buttonBrush);
           if (checked)
@@ -1841,7 +2533,16 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
       POINT point{};
       GetCursorPos(&point);
       ScreenToClient(hwnd_, &point);
-      if (draggingSplitter_ || PtInRect(&splitter_, point))
+      if (explorerLayout_)
+      {
+        for (int i = 0; i < 3; ++i)
+          if (explorerDragIndex_ == i || PtInRect(&explorerSplitters_[i], point))
+          {
+            SetCursor(LoadCursorW(nullptr, i == 2 ? IDC_SIZENS : IDC_SIZEWE));
+            return TRUE;
+          }
+      }
+      else if (draggingSplitter_ || PtInRect(&splitter_, point))
       {
         SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
         return TRUE;
@@ -1851,6 +2552,16 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
     case WM_LBUTTONDOWN:
     {
       POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+      if (explorerLayout_)
+        for (int i = 0; i < 3; ++i)
+          if (PtInRect(&explorerSplitters_[i], point))
+          {
+            explorerDragIndex_ = i;
+            splitterDragOffset_ = i == 2 ? point.y : point.x;
+            SetCapture(hwnd_);
+            SetCursor(LoadCursorW(nullptr, i == 2 ? IDC_SIZENS : IDC_SIZEWE));
+            return 0;
+          }
       if (PtInRect(&splitter_, point))
       {
         draggingSplitter_ = true;
@@ -1862,6 +2573,16 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
       break;
     }
     case WM_MOUSEMOVE:
+      if (explorerDragIndex_ >= 0)
+      {
+        int position = explorerDragIndex_ == 2 ? GET_Y_LPARAM(l) : GET_X_LPARAM(l);
+        if (position != splitterDragOffset_)
+        {
+          splitterDragOffset_ = position;
+          moveExplorerSplitter(explorerDragIndex_, position);
+        }
+        return 0;
+      }
       if (draggingSplitter_)
       {
         moveSplitter(GET_X_LPARAM(l) - splitterDragOffset_);
@@ -1869,6 +2590,15 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
       }
       break;
     case WM_LBUTTONUP:
+      if (explorerDragIndex_ >= 0)
+      {
+        int position = explorerDragIndex_ == 2 ? GET_Y_LPARAM(l) : GET_X_LPARAM(l);
+        if (position != splitterDragOffset_)
+          moveExplorerSplitter(explorerDragIndex_, position);
+        explorerDragIndex_ = -1;
+        ReleaseCapture();
+        return 0;
+      }
       if (draggingSplitter_)
       {
         moveSplitter(GET_X_LPARAM(l) - splitterDragOffset_);
@@ -1876,9 +2606,12 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
         return 0;
       }
       break;
-    case WM_CAPTURECHANGED: draggingSplitter_ = false; break;
+    case WM_CAPTURECHANGED:
+      draggingSplitter_ = false;
+      explorerDragIndex_ = -1;
+      break;
     case WM_CANCELMODE:
-      if (draggingSplitter_)
+      if (draggingSplitter_ || explorerDragIndex_ >= 0)
         ReleaseCapture();
       break;
     case WM_GETMINMAXINFO:
@@ -1906,6 +2639,18 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
         case FullFile:
           if (HIWORD(w) == BN_CLICKED)
             toggleFullFile();
+          break;
+        case ExplorerLayout:
+          if (HIWORD(w) == BN_CLICKED)
+            setExplorerLayout(SendMessageW(layoutButton_, BM_GETCHECK, 0, 0) == BST_CHECKED);
+          break;
+        case ExplorerCommits:
+          if (HIWORD(w) == LBN_SELCHANGE)
+            selectExplorerGroup(static_cast<int>(SendMessageW(explorerCommits_, LB_GETCURSEL, 0, 0)));
+          break;
+        case ExplorerFiles:
+          if (HIWORD(w) == LBN_SELCHANGE)
+            selectExplorerFile(static_cast<int>(SendMessageW(explorerFiles_, LB_GETCURSEL, 0, 0)));
           break;
         case Refresh: refresh(); break;
         case Compare: refresh(); break;
