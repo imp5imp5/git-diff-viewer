@@ -66,9 +66,13 @@ private:
   std::wstring fileScrollKey(const std::wstring &path) const;
   void navigateList(int direction, bool focusDiff = true);
   void toggleCommitMessage();
+  void syncComments();
+  void openCommentEditor();
+  void copyComments();
   void loadMoreHistory();
   int messageReturnIndex_{-1}, messageReturnTop_{};
   std::vector<FileListItem> fileListItems_, explorerGroups_, explorerFileItems_;
+  std::vector<ReviewComment> comments_;
   std::unordered_map<const FileDiff *, int> fileItemIndex_;
   FileStatsMode fileStatsMode_{FileStatsMode::Auto};
   void sourceChanged();
@@ -101,8 +105,8 @@ private:
   std::wstring filePathAt(int index) const;
   static LRESULT CALLBACK filesProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   static LRESULT CALLBACK explorerListProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
-  HWND tooltip_{}, themeButton_{}, fullFileButton_{}, layoutButton_{}, explorerCommits_{}, explorerMessage_{}, explorerFiles_{},
-    explorerBars_[3]{}, explorerCommitLabel_{}, explorerMessageLabel_{}, explorerFilesLabel_{};
+  HWND tooltip_{}, themeButton_{}, fullFileButton_{}, layoutButton_{}, copyCommentsButton_{}, explorerCommits_{}, explorerMessage_{},
+    explorerFiles_{}, explorerBars_[3]{}, explorerCommitLabel_{}, explorerMessageLabel_{}, explorerFilesLabel_{};
   std::wstring tooltipText_, savedCommit_, infoTooltipText_;
   int tooltipIndex_{-1};
   HWND tooltipOwner_{};

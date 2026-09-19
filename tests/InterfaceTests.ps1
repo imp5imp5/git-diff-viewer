@@ -232,6 +232,24 @@ try {
     $state=Wait-Idle
     Check ($state.files.Count -eq 9 -and $state.selectedFile -eq 'app.cpp') 'Initial staged files'
     $compactRows=$state.rowCount
+    $commentLine=@($state.visibleRows | Where-Object {$null -ne $_.right -and $null -ne $_.right.newLine})[0].right.newLine
+    $review=Invoke-App 'comment-add' @([string]$commentLine,[string]$commentLine,'review note')
+    Check ($review.commentCount -eq 1 -and $review.rowCount -eq $compactRows + 1 -and $review.commentRows.Count -eq 1) 'Comment appears after its After line'
+    $copyButton=$review.controls | Where-Object {$_.id -eq 'copy-comments'}
+    Check ($copyButton.enabled -and $copyButton.visible) 'Copy comments button is available'
+    Capture 'comment-unified.png'
+    $commentRow=$review.commentRows[0]
+    for($attempt=0;$attempt -lt 10 -and $review.activeChangeStart -ne $commentRow;$attempt++) {
+        $review=Invoke-App 'navigate-change' @('next')
+    }
+    Check ($review.activeChangeStart -eq $commentRow) 'Change navigation stops on the comment'
+    $review=Invoke-App 'view' @('side-by-side')
+    Check ($review.commentCount -eq 1 -and $review.commentRows.Count -eq 1) 'Comment survives side-by-side layout'
+    Capture 'comment-side-by-side.png'
+    Invoke-App 'view' @('unified') | Out-Null
+    Invoke-App 'refresh' | Out-Null
+    $state=Wait-Idle
+    Check ($state.commentCount -eq 0 -and $state.rowCount -eq $compactRows) 'Refresh clears session comments'
     $fullLoading=Invoke-App 'full-file' @('on')
     Check ($fullLoading.loading -and $fullLoading.statusAnimating) 'Full-file mode lazily loads the selected file with status animation'
     $state=Wait-Idle
@@ -314,8 +332,11 @@ try {
     $state=Invoke-App 'splitter' @('360')
     $filesControl=$state.controls | Where-Object {$_.id -eq 'files'}
     $diffControl=$state.controls | Where-Object {$_.id -eq 'diff'}
+    $copyButton=$state.controls | Where-Object {$_.id -eq 'copy-comments'}
+    Check ($copyButton.visible -and $copyButton.x -ge 0 -and $copyButton.x + $copyButton.width -le $state.width) 'Copy comments remains visible in a narrow window'
     Check ($filesControl.x + $filesControl.width -eq 360 -and $diffControl.x -gt 360) 'Dragging splitter resizes file and diff panes'
     Capture 'resized.png'
+    Invoke-App 'resize' @('1280','820') | Out-Null
     Invoke-App 'source' @('unstaged') | Out-Null
     $state=Wait-Idle
     Check ($state.files.Count -eq 1 -and $state.files[0].path -eq 'notes.txt') 'Unstaged source'

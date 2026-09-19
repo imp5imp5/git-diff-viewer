@@ -1,10 +1,12 @@
 #include "MainWindow.h"
+#include "CommentEditor.h"
 #include "Screenshot.h"
 #include "Theme.h"
 #include <uxtheme.h>
 #include <dwmapi.h>
 #include <filesystem>
 #include <algorithm>
+#include <cwctype>
 #include <iterator>
 #include <commctrl.h>
 #include <shobjidl.h>
@@ -36,7 +38,8 @@ enum
   FullFile,
   ExplorerLayout,
   ExplorerCommits,
-  ExplorerFiles
+  ExplorerFiles,
+  CopyComments
 };
 constexpr int minFilePaneWidth = 220;
 constexpr int minDiffPaneWidth = 300;
@@ -214,7 +217,7 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
   if (!automationDirectory_.empty())
     SetTimer(hwnd_, automationTimer, 100, nullptr);
   ACCEL entries[] = {{FVIRTKEY | FCONTROL, 'R', Refresh}, {FVIRTKEY, VK_F5, Refresh}, {FVIRTKEY | FCONTROL | FSHIFT, 'D', Toggle},
-    {FVIRTKEY | FCONTROL | FSHIFT, 'S', Screenshot}, {FVIRTKEY | FCONTROL, VK_OEM_PLUS, ZoomIn},
+    {FVIRTKEY | FCONTROL | FSHIFT, 'S', Screenshot}, {FVIRTKEY, VK_F2, CopyComments}, {FVIRTKEY | FCONTROL, VK_OEM_PLUS, ZoomIn},
     {FVIRTKEY | FCONTROL, VK_OEM_MINUS, ZoomOut}, {FVIRTKEY | FCONTROL | FSHIFT, VK_OEM_PLUS, ZoomIn},
     {FVIRTKEY | FCONTROL, VK_DOWN, NextFile}, {FVIRTKEY | FCONTROL, VK_UP, PreviousFile}, {FVIRTKEY | FCONTROL, VK_NEXT, NextChange},
     {FVIRTKEY | FCONTROL, VK_PRIOR, PreviousChange}, {FVIRTKEY | FCONTROL, VK_ADD, ZoomIn},
@@ -292,6 +295,8 @@ void MainWindow::createControls()
   fullFileButton_ = control(L"BUTTON", L"Full file", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE, FullFile);
   themeButton_ = control(L"BUTTON", L"Light theme", WS_TABSTOP, Theme);
   layoutButton_ = control(L"BUTTON", L"Wide Diff", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE, ExplorerLayout);
+  copyCommentsButton_ = control(L"BUTTON", L"Copy comments", WS_TABSTOP, CopyComments);
+  EnableWindow(copyCommentsButton_, FALSE);
   SendMessageW(layoutButton_, BM_SETCHECK, explorerLayout_ ? BST_CHECKED : BST_UNCHECKED, 0);
   baseLabel_ = control(L"STATIC", L"Base branch / ref", 0, 0);
   base_ = control(L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, Base);
@@ -422,9 +427,21 @@ void MainWindow::layout()
   move(fullFileButton_, pad + scale(441), pad, scale(100), row);
   move(themeButton_, pad + scale(553), pad, scale(115), row);
   move(layoutButton_, pad + scale(680), pad, scale(90), row);
-  int infoX = pad + scale(782);
-  move(info_, infoX, pad, width - infoX - pad, row);
+  bool compactToolbar = width < scale(1120);
   int y = pad + row + gap;
+  if (compactToolbar)
+  {
+    move(copyCommentsButton_, pad, y, scale(150), row);
+    int infoX = pad + scale(162);
+    move(info_, infoX, y, width - infoX - pad, row);
+    y += row + gap;
+  }
+  else
+  {
+    move(copyCommentsButton_, pad + scale(782), pad, scale(150), row);
+    int infoX = pad + scale(944);
+    move(info_, infoX, pad, width - infoX - pad, row);
+  }
   auto mode = source(source_);
   bool fields = mode == ChangeSource::ReadyToPush || mode == ChangeSource::Commit || mode == ChangeSource::Range;
   bool baseVisible = mode == ChangeSource::ReadyToPush || mode == ChangeSource::Range,
@@ -807,6 +824,7 @@ void MainWindow::selectExplorerFile(int index)
       file = &found->second.files.front();
   }
   diff_.setFile(file);
+  syncComments();
   auto saved = fileScrollPositions_.find(fileScrollKey(selectedListKey_));
   if (saved != fileScrollPositions_.end())
     diff_.scroll(saved->second);
@@ -837,6 +855,11 @@ void MainWindow::sourceChanged()
 void MainWindow::refresh(bool seriesSelection)
 {
   endPreview();
+  comments_.clear();
+  diff_.setComments({});
+  EnableWindow(copyCommentsButton_, FALSE);
+  InvalidateRect(files_, nullptr, FALSE);
+  InvalidateRect(explorerFiles_, nullptr, FALSE);
   if (directory_.empty())
   {
     diff_.setMessage(L"No repository found. Start gfd.exe from a repository folder.\n\nF5  "
@@ -913,6 +936,7 @@ void MainWindow::loaded()
     if (fullFile_ && selectedListKey_ == result->request.selectionKey && !document->second.files.empty())
     {
       diff_.setFile(&document->second.files.front());
+      syncComments();
       auto saved = fileScrollPositions_.find(fileScrollKey(selectedListKey_));
       if (saved != fileScrollPositions_.end())
         diff_.scroll(saved->second);
@@ -1382,6 +1406,7 @@ void MainWindow::selectFile()
     return;
   }
   selectedListKey_ = item.key;
+  diff_.setComments({});
   updateStatus();
   if (item.kind == FileListItemKind::CommitMessage)
   {
@@ -1481,6 +1506,7 @@ void MainWindow::selectFile()
         file = &cached->second.files.front();
     }
     diff_.setFile(file);
+    syncComments();
     auto saved = fileScrollPositions_.find(fileScrollKey(selectedListKey_));
     if (saved != fileScrollPositions_.end())
       diff_.scroll(saved->second);
@@ -1490,6 +1516,114 @@ void MainWindow::selectFile()
       requestSelectedFullFile(item);
   }
 }
+void MainWindow::syncComments()
+{
+  std::vector<ReviewComment> visible;
+  if (diff_.file() && !diff_.plainText())
+    for (const auto &comment : comments_)
+      if (comment.key == selectedListKey_)
+        visible.push_back(comment);
+  diff_.setComments(std::move(visible));
+}
+void MainWindow::copyComments()
+{
+  if (!comments_.empty())
+    copyFileName(hwnd_, formatReviewComments(comments_));
+}
+void MainWindow::openCommentEditor()
+{
+  if (diff_.plainText() || !diff_.file())
+    return;
+  const FileListItem *item = nullptr;
+  if (explorerLayout_)
+  {
+    int index = static_cast<int>(SendMessageW(explorerFiles_, LB_GETCURSEL, 0, 0));
+    if (index >= 0 && static_cast<size_t>(index) < explorerFileItems_.size())
+      item = &explorerFileItems_[static_cast<size_t>(index)];
+  }
+  else
+  {
+    int index = static_cast<int>(SendMessageW(files_, LB_GETCURSEL, 0, 0));
+    if (index >= 0 && static_cast<size_t>(index) < fileListItems_.size())
+      item = &fileListItems_[static_cast<size_t>(index)];
+  }
+  if (!item || !item->file || item->key != selectedListKey_)
+    return;
+  auto selected = diff_.selectedNewLines();
+  int selectedAnnotation = diff_.selectedComment();
+  size_t existing = comments_.size(), visible = 0;
+  for (size_t index = 0; index < comments_.size(); ++index)
+  {
+    const auto &comment = comments_[index];
+    if (comment.key != item->key)
+      continue;
+    bool intersects = selected && selected->first <= comment.lastLine && selected->second >= comment.firstLine;
+    if (intersects || selectedAnnotation == static_cast<int>(visible))
+    {
+      existing = index;
+      break;
+    }
+    ++visible;
+  }
+  if (existing == comments_.size() && !selected)
+    return;
+  const std::wstring *oldText = existing < comments_.size() ? &comments_[existing].text : nullptr;
+  auto edit = editReviewComment(hwnd_, instance_, oldText);
+  if (edit.action == CommentEditAction::Cancel)
+    return;
+  if (edit.action == CommentEditAction::Delete)
+    comments_.erase(comments_.begin() + static_cast<std::ptrdiff_t>(existing));
+  else if (existing < comments_.size())
+    comments_[existing].text = std::move(edit.text);
+  else
+  {
+    ReviewComment comment;
+    comment.key = item->key;
+    comment.path = item->file->path();
+    comment.firstLine = selected->first;
+    comment.lastLine = selected->second;
+    const Commit *commit = item->commit;
+    if (!commit && item->key.rfind(L"commit\n", 0) == 0 && item->commitIndex < snapshot_.commits.size())
+      commit = &snapshot_.commits[item->commitIndex];
+    if (commit)
+    {
+      comment.hash = commit->id;
+      comment.changeId = changeIdFromMessage(commit->message);
+    }
+    else if (!snapshot_.commitId.empty())
+    {
+      comment.hash = snapshot_.commitId;
+      comment.changeId = changeIdFromMessage(snapshot_.commitMessage);
+    }
+    if (!comment.hash.empty())
+      comment.branch = snapshot_.branch;
+    for (const auto &hunk : diff_.file()->hunks)
+    {
+      for (const auto &line : hunk.lines)
+      {
+        if (!line.newLine || *line.newLine < comment.firstLine || *line.newLine > comment.lastLine)
+          continue;
+        int nonspace = 0;
+        for (wchar_t c : line.text)
+          nonspace += !iswspace(c);
+        if (nonspace > 1)
+        {
+          comment.excerpt = line.text;
+          break;
+        }
+      }
+      if (!comment.excerpt.empty())
+        break;
+    }
+    comment.text = std::move(edit.text);
+    comments_.push_back(std::move(comment));
+  }
+  syncComments();
+  EnableWindow(copyCommentsButton_, !comments_.empty());
+  InvalidateRect(files_, nullptr, FALSE);
+  InvalidateRect(explorerFiles_, nullptr, FALSE);
+}
+
 void MainWindow::requestSelectedFullFile(const FileListItem &item)
 {
   if (!item.file || item.key.empty())
@@ -1588,7 +1722,7 @@ void MainWindow::updateStatus()
     status += L"    " + snapshot_.notice;
   else
     status += L"    |    F5 Refresh · F Full file · Ctrl+PgUp/PgDn Change · Ctrl+Down/Up List · Space Commit message · Ctrl+Shift+D "
-              L"View · Ctrl+C Copy";
+              L"View · C Comment | F2 Copy comments | Ctrl+C Copy";
   SetWindowTextW(status_, status.c_str());
 }
 void MainWindow::rememberFileScroll()
@@ -1650,6 +1784,7 @@ void MainWindow::endPreview()
     return;
   previewIndex_ = -1;
   diff_.setFile(previewPreviousFile_, false, previewPreviousPlain_);
+  syncComments();
   diff_.scroll(previewTop_);
   previewPreviousFile_ = nullptr;
 }
@@ -1888,6 +2023,16 @@ void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
           textRect.right -= spaceWidth.cx;
           drawCount(removed, listItem->maxRemoved, L'-', ThemeColor::RemovedIndicator);
           textRect.right -= pad;
+        }
+        bool hasComment =
+          std::any_of(comments_.begin(), comments_.end(), [&](const ReviewComment &comment) { return comment.key == listItem->key; });
+        if (hasComment)
+        {
+          int markerWidth = MulDiv(23, static_cast<int>(dpi_), 96);
+          RECT marker{textRect.right - markerWidth, textRect.top, textRect.right, textRect.bottom};
+          SetTextColor(item.hDC, selected ? RGB(255, 230, 150) : themeColor(ThemeColor::CommentIndicator));
+          DrawTextW(item.hDC, L"\xD83D\xDCAC", 2, &marker, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+          textRect.right -= markerWidth;
         }
         textRect.left += pad;
         SetTextColor(item.hDC, themeColor(selected ? ThemeColor::SelectionText : ThemeColor::Text));
@@ -2670,6 +2815,7 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
       return 0;
     }
     case repositoryReady: loaded(); return 0;
+    case WM_APP + 2: openCommentEditor(); return 0;
     case WM_COMMAND:
       switch (LOWORD(w))
       {
@@ -2694,6 +2840,7 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
             selectExplorerFile(static_cast<int>(SendMessageW(explorerFiles_, LB_GETCURSEL, 0, 0)));
           break;
         case Refresh: refresh(); break;
+        case CopyComments: copyComments(); break;
         case Compare: refresh(); break;
         case Source:
           if (HIWORD(w) == CBN_SELCHANGE)

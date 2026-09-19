@@ -8,6 +8,8 @@ struct PresentationRow
 {
   size_t hunk{noLine}, left{noLine}, right{noLine};
   std::wstring meta;
+  size_t comment{noLine};
+  std::wstring commentText;
 };
 struct ChangeBlock
 {

@@ -12,6 +12,7 @@ The application uses the installed Git command-line client to read repository da
 - Inspect local commits relative to an upstream or an explicitly selected base branch.
 - Switch between unified and side-by-side diffs and between the classic and Wide Diff window layouts without reloading Git data, while preserving the current viewing position.
 - Display line numbers, added and removed lines, file statuses, renames, and binary-file notices.
+- Add inline review comments to selected After lines and copy all comments as review text.
 - Read full commit messages in Wide Diff, or preview them by hovering over entries in the local commit dropdown.
 - Browse Unicode paths and text, with virtualized diff rendering and background Git loading.
 - Adjust the diff font size and switch between dark and light themes.
@@ -129,7 +130,7 @@ In the classic layout, select a commit heading to display its SHA, author, date,
 
 In **History**, **Changed files** contains bold **Unstaged**, **Staged**, **Ready to push**, and **History** headings, with commits shown newest first. Section headings open a summary. Unstaged, Staged, and Ready to push headings show total removed and added lines on the right. Commit subjects align after the short hash and show commit totals on the right when the file list is wider than 60 `0` characters. Ready to push and History summaries include the full messages of their commits, separated by 80 underscore characters. Empty sections remain visible with an explanation, including repositories without an upstream. Commits listed under **Ready to push** are excluded from the general **History** section. The initial page contains 10 commits by default. Choose **Load more** (or focus it and press `Enter` or `Space`) to append 10 more; refresh starts from the current `HEAD` while retaining the expanded in-session limit. Untracked files are not included.
 
-Use **Refresh** to reload repository changes. Refresh is manual.
+Use **Refresh** to reload repository changes. Refresh is manual. Review comments stay in memory until Refresh or application exit; they are not saved to settings. The export includes the file and line range, a representative source line, and the comment. For commit comparisons it also includes Branch, Hash, and Change-Id when present in the commit message.
 
 While a Git operation is running, a moving highlight in the status-line background indicates activity.
 
@@ -142,7 +143,9 @@ Use **Full file** or press `F` to show every line of the selected changed text f
 | `F5` or `Ctrl+R` | Refresh Git data. |
 | `Ctrl+Shift+D` | Toggle unified / side-by-side layout. |
 | `F` while not editing a ref or using a dropdown | Toggle full-file context. |
-| `Ctrl+Page Up` / `Ctrl+Page Down` | Go to the previous / next changed block. |
+| `Ctrl+Page Up` / `Ctrl+Page Down` | Go to the previous / next changed block or comment. |
+| `C` with After lines selected in the diff | Add or edit the first overlapping comment; the dialog can also delete it. |
+| `F2` or **Copy comments** | Copy all session comments to the clipboard. |
 | `Ctrl+Down` / `Ctrl+Up` | Select the next / previous item in **Changed files**, or in the active Commits or Files panel in Wide Diff. |
 | `Space` with the classic file list, diff, or closed commit dropdown focused | Toggle the current commit message, restoring the previous file and scroll position on return. |
 | `Enter` or `Space` on **Load more** | Append the next History page. |
@@ -159,6 +162,8 @@ Use **Full file** or press `F` to show every line of the selected changed text f
 | `Ctrl+Shift+S` | Save an application PNG through a file dialog. |
 
 ### Automation interface
+
+The automation command `comment-add <first> <last> <text>` adds a session comment to the selected file for interface testing. State reports `commentCount`, `commentRows`, and visible comment text.
 
 The automation command `layout panels` selects Wide Diff, while `layout classic` selects the original layout. Commands `select-explorer-group`, `select-explorer-file`, `explorer-splitter`, and `explorer-wheel` control the upper panels. State reports their rows, bounds, and message text.
 

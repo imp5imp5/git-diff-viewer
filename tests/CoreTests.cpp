@@ -1,4 +1,5 @@
 #include "diff/PresentationBuilder.h"
+#include "diff/ReviewComments.h"
 #include "diff/UnifiedDiffParser.h"
 #include <iostream>
 #include <stdexcept>
@@ -98,6 +99,26 @@ try
             conflict.files[0].status == FileStatus::Unknown,
       "staged and combined conflict paths");
   }
+  ReviewComment review;
+  review.path = L"src/example.cpp";
+  review.branch = L"main";
+  review.hash = L"0123456789abcdef";
+  review.changeId = changeIdFromMessage(L"Subject\n\nChange-Id: I123456\n");
+  review.firstLine = 49;
+  review.lastLine = 51;
+  review.excerpt = L"  E3DCOLOR color = value;";
+  review.text = L"adapt colors";
+  check(review.changeId == L"I123456", "Change-Id trailer");
+  check(formatReviewComments({review}) ==
+          L"Branch: main\r\nHash: 0123456789abcdef\r\nChange-Id: I123456\r\nFile: src/example.cpp\r\n"
+          L"Lines: 49..51\r\n  E3DCOLOR color = value; ...\r\nComment: adapt colors\r\n\r\n====\r\n\r\n",
+    "comment export format");
+  review.branch.clear();
+  review.hash.clear();
+  review.changeId.clear();
+  review.firstLine = review.lastLine = 7;
+  check(formatReviewComments({review}).find(L"Lines: 7\r\n") != std::wstring::npos,
+    "uncommitted comment omits commit metadata and single line has no range");
   std::cout << "Parser, presentation, Unicode, truncation and 20,000-line tests passed\n";
   return 0;
 }

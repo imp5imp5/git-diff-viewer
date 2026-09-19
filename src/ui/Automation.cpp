@@ -81,8 +81,9 @@ std::string MainWindow::stateJson() const
                     ",\"minimapMarkers\":" + std::to_string(diff_.minimapMarkerCount()) +
                     ",\"scrollbarHover\":" + std::string(diff_.scrollbarHovered() ? "true" : "false") +
                     ",\"scrollbarDragging\":" + std::string(diff_.scrollbarDragging() ? "true" : "false") +
-                    ",\"fontSize\":" + std::to_string(diff_.fontSize()) + ",\"status\":" + json(label(status_)) +
-                    ",\"width\":" + std::to_string(r.right) + ",\"height\":" + std::to_string(r.bottom) + ",\"files\":[";
+                    ",\"fontSize\":" + std::to_string(diff_.fontSize()) + ",\"commentCount\":" + std::to_string(comments_.size()) +
+                    ",\"status\":" + json(label(status_)) + ",\"width\":" + std::to_string(r.right) +
+                    ",\"height\":" + std::to_string(r.bottom) + ",\"files\":[";
   bool first = true;
   if (!snapshot_.commitId.empty())
   {
@@ -150,11 +151,11 @@ std::string MainWindow::stateJson() const
   out += "],\"controls\":[";
   first = true;
   const std::pair<const wchar_t *, HWND> controls[] = {{L"refresh", refresh_}, {L"source", source_}, {L"view", view_},
-    {L"full-file", fullFileButton_}, {L"theme", themeButton_}, {L"info", info_}, {L"base", base_}, {L"target", target_},
-    {L"compare", compare_}, {L"files", files_}, {L"commits", commits_}, {L"diff", diff_.handle()}, {L"status", status_},
-    {L"layout", layoutButton_}, {L"explorer-commits", explorerCommits_}, {L"explorer-message", explorerMessage_},
-    {L"explorer-files", explorerFiles_}, {L"explorer-commits-scroll", explorerBars_[0]}, {L"explorer-files-scroll", explorerBars_[1]},
-    {L"explorer-message-scroll", explorerBars_[2]}};
+    {L"full-file", fullFileButton_}, {L"theme", themeButton_}, {L"copy-comments", copyCommentsButton_}, {L"info", info_},
+    {L"base", base_}, {L"target", target_}, {L"compare", compare_}, {L"files", files_}, {L"commits", commits_},
+    {L"diff", diff_.handle()}, {L"status", status_}, {L"layout", layoutButton_}, {L"explorer-commits", explorerCommits_},
+    {L"explorer-message", explorerMessage_}, {L"explorer-files", explorerFiles_}, {L"explorer-commits-scroll", explorerBars_[0]},
+    {L"explorer-files-scroll", explorerBars_[1]}, {L"explorer-message-scroll", explorerBars_[2]}};
   for (const auto &c : controls)
   {
     RECT bounds{};
@@ -165,7 +166,8 @@ std::string MainWindow::stateJson() const
     first = false;
     out += "{\"id\":" + json(c.first) + ",\"text\":" + json(label(c.second)) +
            ",\"visible\":" + ((GetWindowLongPtrW(c.second, GWL_STYLE) & WS_VISIBLE) ? "true" : "false") +
-           ",\"focused\":" + (GetFocus() == c.second ? "true" : "false") + ",\"x\":" + std::to_string(bounds.left) +
+           ",\"focused\":" + (GetFocus() == c.second ? "true" : "false") +
+           ",\"enabled\":" + (IsWindowEnabled(c.second) ? "true" : "false") + ",\"x\":" + std::to_string(bounds.left) +
            ",\"y\":" + std::to_string(bounds.top) + ",\"width\":" + std::to_string(bounds.right - bounds.left) +
            ",\"height\":" + std::to_string(bounds.bottom - bounds.top) + "}";
   }
@@ -179,10 +181,20 @@ std::string MainWindow::stateJson() const
            ",\"width\":" + std::to_string(rect.right - rect.left) + ",\"height\":" + std::to_string(rect.bottom - rect.top) + "}";
   }
   out +=
-    "],\"explorerMessageText\":" + json(label(explorerMessage_)) + ",\"message\":" + json(diff_.messageText()) + ",\"visibleRows\":[";
-  first = true;
+    "],\"explorerMessageText\":" + json(label(explorerMessage_)) + ",\"message\":" + json(diff_.messageText()) + ",\"commentRows\":[";
   const auto *file = diff_.file();
   const auto &rows = diff_.presentation();
+  first = true;
+  for (size_t i = 0; i < rows.size(); ++i)
+    if (rows[i].comment != noLine)
+    {
+      if (!first)
+        out += ',';
+      first = false;
+      out += std::to_string(i);
+    }
+  out += "],\"visibleRows\":[";
+  first = true;
   for (int i = diff_.topRow();
        file && i < diff_.topRow() + std::min(100, diff_.visibleRowCount()) && i < static_cast<int>(rows.size()); ++i)
   {
@@ -198,8 +210,8 @@ std::string MainWindow::stateJson() const
     if (!first)
       out += ',';
     first = false;
-    out += "{\"row\":" + std::to_string(i) + ",\"meta\":" + json(row.meta) + ",\"left\":" + cell(row.left) +
-           ",\"right\":" + cell(row.right) + "}";
+    out += "{\"row\":" + std::to_string(i) + ",\"meta\":" + json(row.meta) + ",\"comment\":" + json(row.commentText) +
+           ",\"left\":" + cell(row.left) + ",\"right\":" + cell(row.right) + "}";
   }
   return out + "]}";
 }
@@ -247,6 +259,23 @@ void MainWindow::automationTick()
       return fields[n + 2];
     };
     if (command == L"state") {}
+    else if (command == L"comment-add")
+    {
+      if (!diff_.file() || diff_.plainText() || selectedListKey_.empty())
+        throw std::runtime_error("Select a diff file first.");
+      int first = integer(arg(0), 1, 100000000), last = integer(arg(1), first, 100000000);
+      ReviewComment comment;
+      comment.key = selectedListKey_;
+      comment.path = diff_.file()->path();
+      comment.firstLine = first;
+      comment.lastLine = last;
+      comment.text = arg(2);
+      comments_.push_back(std::move(comment));
+      syncComments();
+      EnableWindow(copyCommentsButton_, TRUE);
+      InvalidateRect(files_, nullptr, FALSE);
+      InvalidateRect(explorerFiles_, nullptr, FALSE);
+    }
     else if (command == L"navigate-file")
       navigateList(integer(arg(0), -1, 1));
     else if (command == L"list-key")
