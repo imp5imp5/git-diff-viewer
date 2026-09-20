@@ -281,7 +281,7 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
         int index = GetFocus() == files_ ? static_cast<int>(SendMessageW(files_, LB_GETCURSEL, 0, 0)) : -1;
         if (index >= 0 && static_cast<size_t>(index) < fileListItems_.size() &&
             fileListItems_[static_cast<size_t>(index)].kind == FileListItemKind::LoadMore)
-          loadMoreHistory();
+          loadMore(fileListItems_[static_cast<size_t>(index)]);
         else
           toggleCommitMessage();
       }
@@ -293,7 +293,7 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
       if (index >= 0 && static_cast<size_t>(index) < fileListItems_.size() &&
           fileListItems_[static_cast<size_t>(index)].kind == FileListItemKind::LoadMore)
       {
-        loadMoreHistory();
+        loadMore(fileListItems_[static_cast<size_t>(index)]);
         continue;
       }
     }
@@ -685,7 +685,8 @@ void MainWindow::rebuildExplorer()
       add(std::move(group));
     }
     for (const auto &item : fileListItems_)
-      if (item.kind == FileListItemKind::Commit || (mode == ChangeSource::Range && item.kind == FileListItemKind::Summary))
+      if (item.kind == FileListItemKind::Commit || item.kind == FileListItemKind::LoadMore ||
+          (mode == ChangeSource::Range && item.kind == FileListItemKind::Summary))
         add(item);
     if (explorerGroups_.empty())
     {
@@ -738,7 +739,7 @@ void MainWindow::selectExplorerGroup(int index, bool preserveFile, bool selectLa
   auto &group = explorerGroups_[static_cast<size_t>(index)];
   if (group.kind == FileListItemKind::LoadMore)
   {
-    loadMoreHistory();
+    loadMore(group);
     return;
   }
   const DiffDocument *document = group.document;
@@ -903,7 +904,7 @@ void MainWindow::sourceChanged()
   SendMessageW(commits_, CB_RESETCONTENT, 0, 0);
   layout();
 }
-void MainWindow::refresh(bool seriesSelection)
+void MainWindow::refresh(bool seriesSelection, bool keepCommitContext)
 {
   endPreview();
   comments_.clear();
@@ -918,6 +919,13 @@ void MainWindow::refresh(bool seriesSelection)
     return;
   }
   CompareRequest request{directory_, source(source_), getText(base_), getText(target_), false};
+  if (request.source == ChangeSource::Commit)
+  {
+    if (!keepCommitContext)
+      commitAncestorLimit_ = 10, commitDescendantLimit_ = 5;
+    request.commitAncestorLimit = commitAncestorLimit_;
+    request.commitDescendantLimit = commitDescendantLimit_;
+  }
   if (request.source == ChangeSource::Commit && request.target == commitBranchCommit_)
     request.branch = commitBranch_;
   if (request.source == ChangeSource::History)
@@ -963,6 +971,28 @@ void MainWindow::loadMoreHistory()
   SetWindowTextW(status_, L"Loading more commits...");
   InvalidateRect(files_, nullptr, FALSE);
   controller_->request(std::move(request));
+}
+void MainWindow::loadMoreCommitContext(bool descendants)
+{
+  if (loading_ || source(source_) != ChangeSource::Commit ||
+      !(descendants ? snapshot_.hasMoreCommitDescendants : snapshot_.hasMoreCommitAncestors))
+    return;
+  if (descendants)
+    commitDescendantLimit_ += 10;
+  else
+    commitAncestorLimit_ += 10;
+  loadMoreLoading_ = true;
+  SetWindowTextW(status_, L"Loading more commits...");
+  refresh(false, true);
+}
+void MainWindow::loadMore(const FileListItem &item)
+{
+  if (item.key == L"history-load-more")
+    loadMoreHistory();
+  else if (item.key == L"commit-load-more-descendants")
+    loadMoreCommitContext(true);
+  else if (item.key == L"commit-load-more-ancestors")
+    loadMoreCommitContext(false);
 }
 void MainWindow::loaded()
 {
@@ -1181,6 +1211,8 @@ void MainWindow::loaded()
   bool history = result->request.source == ChangeSource::History;
   bool grouped = result->request.source == ChangeSource::Commit || result->request.source == ChangeSource::Range ||
                  result->request.source == ChangeSource::ReadyToPush;
+  if (result->request.source == ChangeSource::Commit && snapshot_.hasMoreCommitDescendants)
+    addItem({FileListItemKind::LoadMore, nullptr, 0, 0, 0, L"Load more", L"commit-load-more-descendants"});
   if (history)
   {
     auto addSection = [&](const wchar_t *label, const wchar_t *key, FileListGroup group, const DiffDocument *document) {
@@ -1294,6 +1326,8 @@ void MainWindow::loaded()
           selected = index;
       }
     }
+    if (result->request.source == ChangeSource::Commit && snapshot_.hasMoreCommitAncestors)
+      addItem({FileListItemKind::LoadMore, nullptr, 0, 0, 0, L"Load more", L"commit-load-more-ancestors"});
   }
   else
     for (const auto &file : snapshot_.document.files)
@@ -1443,7 +1477,7 @@ void MainWindow::selectFile()
   const auto &item = fileListItems_[static_cast<size_t>(index)];
   if (item.kind == FileListItemKind::LoadMore)
   {
-    loadMoreHistory();
+    loadMore(item);
     return;
   }
   if (item.kind == FileListItemKind::Spacer)
@@ -2530,7 +2564,7 @@ LRESULT CALLBACK MainWindow::filesProcedure(HWND hwnd, UINT msg, WPARAM w, LPARA
     if (index >= 0 && static_cast<size_t>(index) < self->fileListItems_.size() &&
         self->fileListItems_[static_cast<size_t>(index)].kind == FileListItemKind::LoadMore)
     {
-      self->loadMoreHistory();
+      self->loadMore(self->fileListItems_[static_cast<size_t>(index)]);
       return 0;
     }
   }
@@ -2541,7 +2575,7 @@ LRESULT CALLBACK MainWindow::filesProcedure(HWND hwnd, UINT msg, WPARAM w, LPARA
     int index = HIWORD(hit) ? -1 : LOWORD(hit);
     if (index >= 0 && static_cast<size_t>(index) < self->fileListItems_.size() &&
         self->fileListItems_[static_cast<size_t>(index)].kind == FileListItemKind::LoadMore)
-      self->loadMoreHistory();
+      self->loadMore(self->fileListItems_[static_cast<size_t>(index)]);
     return result;
   }
   if (msg == WM_MOUSEMOVE)

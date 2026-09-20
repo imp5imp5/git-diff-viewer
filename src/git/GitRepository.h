@@ -30,6 +30,8 @@ struct CompareRequest
   std::wstring commitPrefix;
   bool commitLookup{};
   std::wstring branch;
+  size_t commitAncestorLimit{10};
+  size_t commitDescendantLimit{5};
 };
 struct Commit
 {
@@ -48,6 +50,7 @@ struct RepositorySnapshot
 {
   std::wstring root, branch, upstream, base, notice;
   std::wstring commitId, commitMessage;
+  bool hasMoreCommitAncestors{}, hasMoreCommitDescendants{};
   DiffDocument document;
   std::vector<Commit> commits;
   std::vector<DiffDocument> commitDocuments;

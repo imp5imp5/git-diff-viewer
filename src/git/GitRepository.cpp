@@ -232,10 +232,16 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
           trim(run({L"log", L"-1", L"--encoding=UTF-8", L"--format=%H%nAuthor: %an <%ae>%nDate: %aI%n%n%B", id, L"--"}).out);
       if (!request.selectedOnly)
       {
-        auto ancestors = commits(id, false, 0, 11, true);
+        auto ancestors = commits(id, false, 0, request.commitAncestorLimit + 2, true);
+        snapshot.hasMoreCommitAncestors = ancestors.size() > request.commitAncestorLimit + 1;
+        if (snapshot.hasMoreCommitAncestors)
+          ancestors.resize(request.commitAncestorLimit + 1);
         std::vector<Commit> descendants;
         if (snapshot.branch != L"Detached HEAD")
-          descendants = commits(id + L".." + snapshot.branch, false, 0, 5, true, true);
+          descendants = commits(id + L".." + snapshot.branch, false, 0, request.commitDescendantLimit + 1, true, true);
+        snapshot.hasMoreCommitDescendants = descendants.size() > request.commitDescendantLimit;
+        if (snapshot.hasMoreCommitDescendants)
+          descendants.resize(request.commitDescendantLimit);
         snapshot.commits = std::move(descendants);
         snapshot.commits.insert(snapshot.commits.end(), std::make_move_iterator(ancestors.begin()),
           std::make_move_iterator(ancestors.end()));

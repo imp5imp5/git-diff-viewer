@@ -102,7 +102,7 @@ Use the source dropdown to choose what to review:
 | **Unstaged** | Working tree against the index: tracked edits not yet staged. |
 | **All local · HEAD** | Working tree against `HEAD`, combining staged and unstaged changes. |
 | **Ready to push** | Local commits reachable from `HEAD` but not from the base ref; the combined diff compares the merge base with `HEAD`. |
-| **Single commit** | Up to five descendants appear above the target commit, followed by the target and up to ten first-parent ancestors in the same branch. Merge commits use the first parent. |
+| **Single commit** | Up to five descendants appear above the target commit, followed by the target and up to ten first-parent ancestors in the same branch. When more context is available, **Load more** above or below the commit list adds ten descendants or ancestors respectively. Merge commits use the first parent. |
 | **Commit range** | Direct comparison between the base and target refs. |
 | **History** | Working-tree sections, outgoing commits, and recent commits from `HEAD` in one list. |
 

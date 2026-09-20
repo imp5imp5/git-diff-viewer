@@ -58,7 +58,7 @@ private:
   void createControls();
   void layout();
   void updateFonts();
-  void refresh(bool seriesSelection = false);
+  void refresh(bool seriesSelection = false, bool keepCommitContext = false);
   void loaded();
   void selectFile();
   void requestSelectedFullFile(const FileListItem &item);
@@ -71,6 +71,8 @@ private:
   void openCommentEditor();
   void copyComments();
   void loadMoreHistory();
+  void loadMoreCommitContext(bool descendants);
+  void loadMore(const FileListItem &item);
   int messageReturnIndex_{-1}, messageReturnTop_{};
   std::vector<FileListItem> fileListItems_, explorerGroups_, explorerFileItems_;
   std::vector<ReviewComment> comments_;
@@ -156,6 +158,7 @@ private:
   bool loadMoreLoading_{};
   bool statusAnimationActive_{};
   size_t historyInitialLimit_{10}, historyLimit_{10};
+  size_t commitAncestorLimit_{10}, commitDescendantLimit_{5};
   std::wstring fullFileLoadingKey_;
   int historyListTop_{}, historyExplorerTop_{}, historyDiffTop_{}, statusAnimationPhase_{};
   int fileListWheel_{}, explorerWheel_[2]{}, explorerMessageWheel_{}, explorerBarDrag_[3]{-1, -1, -1};
