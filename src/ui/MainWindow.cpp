@@ -1751,8 +1751,8 @@ void MainWindow::updateStatus()
   if (!snapshot_.notice.empty())
     status += L"    " + snapshot_.notice;
   else
-    status += L"    |    F5 Refresh · F Full file · Ctrl+PgUp/PgDn Change · Ctrl+Down/Up List · Space Commit message · Ctrl+Shift+D "
-              L"View · C Comment | F2 Copy comments | Ctrl+C Copy";
+    status += L"    |    F5 Refresh | F Full file | Ctrl+PgUp/PgDn Change | Ctrl+Down/Up List | Space Commit message | Ctrl+Shift+D "
+              L"View | C Comment | F2 Copy comments | Ctrl+C Copy";
   SetWindowTextW(status_, status.c_str());
 }
 void MainWindow::rememberFileScroll()
