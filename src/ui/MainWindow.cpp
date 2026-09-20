@@ -487,8 +487,8 @@ void MainWindow::layout()
     move(base_, pad + scale(118), y, scale(195), row);
     int tx = baseVisible ? pad + scale(325) : pad;
     move(targetLabel_, tx, y + scale(5), scale(110), row);
-    move(target_, tx + scale(115), y, scale(165), row);
-    move(compare_, targetVisible ? tx + scale(288) : pad + scale(325), y, scale(82), row);
+    move(target_, tx + scale(115), y, scale(308), row);
+    move(compare_, targetVisible ? tx + scale(431) : pad + scale(325), y, scale(82), row);
     y += row + gap;
   }
   ShowWindow(commits_, SW_HIDE);
