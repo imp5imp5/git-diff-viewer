@@ -10,7 +10,7 @@ namespace gdv
 class MainWindow
 {
 public:
-  int run(HINSTANCE instance, int show, std::wstring directory, std::wstring automationDirectory = L"");
+  int run(HINSTANCE instance, int show, std::wstring directory, std::wstring automationDirectory = L"", std::wstring hashPrefix = L"");
   ~MainWindow();
 
 private:

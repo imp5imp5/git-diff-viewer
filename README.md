@@ -74,6 +74,14 @@ You can also supply a directory explicitly:
 & .\build\Release\gfd.exe "D:\dagor"
 ```
 
+To open a commit by the first hexadecimal characters of its SHA, pass `--hash:<prefix>`:
+
+```powershell
+& .\build\Release\gfd.exe "D:\dagor" --hash:a1b2
+```
+
+The lookup searches commits reachable from local refs. A single match opens directly in **Single commit** mode. When several commits match, a themed dialog lists their short hashes and first commit-message lines so you can choose one. If none match, the dialog reports that and the application opens with its usual source.
+
 On the first launch, the application opens in **Unstaged** mode with the dark theme. Later launches restore the saved preferences from:
 
 ```text

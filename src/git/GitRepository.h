@@ -54,5 +54,7 @@ class GitRepository
 {
 public:
   RepositorySnapshot load(const CompareRequest &request, const std::atomic_bool &cancel) const;
+  std::vector<Commit> findCommitsByPrefix(const std::wstring &directory, const std::wstring &prefix,
+    const std::atomic_bool &cancel) const;
 };
 } // namespace gdv

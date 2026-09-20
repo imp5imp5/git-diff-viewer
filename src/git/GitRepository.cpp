@@ -1,6 +1,7 @@
 #include "GitRepository.h"
 #include "diff/UnifiedDiffParser.h"
 #include <algorithm>
+#include <cwctype>
 #include <stdexcept>
 #include <unordered_set>
 namespace gdv
@@ -40,6 +41,40 @@ std::vector<Commit> parseCommits(const std::string &log)
   return commits;
 }
 } // namespace
+std::vector<Commit> GitRepository::findCommitsByPrefix(const std::wstring &directory, const std::wstring &prefix,
+  const std::atomic_bool &cancel) const
+{
+  if (prefix.empty() || prefix.size() > 64 ||
+      !std::all_of(prefix.begin(), prefix.end(), [](wchar_t c) { return c < 128 && iswxdigit(c) != 0; }))
+    throw std::invalid_argument("--hash requires 1 to 64 hexadecimal characters.");
+  GitClient git;
+  auto result = git.run(directory, {L"log", L"--all", L"--encoding=UTF-8", L"--format=%H%x00%s%x00"}, cancel);
+  if (result.cancelled || cancel)
+    throw std::runtime_error("Cancelled");
+  if (result.exitCode)
+    throw std::runtime_error(result.err.empty() ? "Unable to list commits" : result.err);
+  std::wstring needle = prefix;
+  std::transform(needle.begin(), needle.end(), needle.begin(), towlower);
+  std::vector<Commit> matches;
+  size_t position = 0;
+  while (position < result.out.size())
+  {
+    auto separator = result.out.find('\0', position);
+    if (separator == std::string::npos)
+      break;
+    auto end = result.out.find('\0', separator + 1);
+    if (end == std::string::npos)
+      break;
+    auto id = fromUtf8(std::string_view(result.out).substr(position, separator - position));
+    if (id.size() >= needle.size() &&
+        std::equal(needle.begin(), needle.end(), id.begin(), [](wchar_t a, wchar_t b) { return a == towlower(b); }))
+      matches.push_back({std::move(id), fromUtf8(std::string_view(result.out).substr(separator + 1, end - separator - 1)), {}, {}});
+    position = end + 1;
+    while (position < result.out.size() && (result.out[position] == '\n' || result.out[position] == '\r'))
+      ++position;
+  }
+  return matches;
+}
 RepositorySnapshot GitRepository::load(const CompareRequest &request, const std::atomic_bool &cancel) const
 {
   GitClient git;

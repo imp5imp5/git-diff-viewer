@@ -342,6 +342,52 @@ try
         "real merge conflicts are visible in staged and unstaged comparisons");
     }
   }
+  for (int i = 0; i < 17; ++i)
+    run({L"commit", L"--allow-empty", L"-m", L"Prefix fixture " + std::to_wstring(i)});
+  auto allIds = run({L"log", L"--all", L"--format=%H"});
+  std::vector<std::wstring> ids;
+  size_t start = 0;
+  while (start < allIds.size())
+  {
+    auto end = allIds.find('\n', start);
+    if (end == std::string::npos)
+      end = allIds.size();
+    if (end > start)
+      ids.push_back(fromUtf8(std::string_view(allIds).substr(start, end - start)));
+    start = end + 1;
+  }
+  check(!ids.empty(), "lookup fixture commits");
+  auto exact = repo.findCommitsByPrefix(dir.wstring(), ids.front(), cancel);
+  check(exact.size() == 1 && exact.front().id == ids.front() && exact.front().subject == L"Prefix fixture 16",
+    "full hash selects one commit and keeps its subject");
+  std::wstring upper = ids.front();
+  std::transform(upper.begin(), upper.end(), upper.begin(), towupper);
+  check(repo.findCommitsByPrefix(dir.wstring(), upper, cancel).size() == 1, "hash prefix ignores case");
+  bool ambiguous = false;
+  for (wchar_t hex : L"0123456789abcdef")
+  {
+    if (!hex)
+      break;
+    auto matches = repo.findCommitsByPrefix(dir.wstring(), std::wstring(1, hex), cancel);
+    if (matches.size() > 1)
+    {
+      ambiguous = true;
+      for (const auto &match : matches)
+        check(match.id[0] == hex && !match.subject.empty(), "ambiguous hash shows subjects");
+      break;
+    }
+  }
+  check(ambiguous, "short hash can match multiple commits");
+  bool invalidPrefix = false;
+  try
+  {
+    repo.findCommitsByPrefix(dir.wstring(), L"not-a-hash", cancel);
+  }
+  catch (const std::invalid_argument &)
+  {
+    invalidPrefix = true;
+  }
+  check(invalidPrefix, "invalid hash prefix is rejected");
   auto quoted = run({L"-c", L"test.quoted=spaces \"quotes\" end\\", L"config", L"--get", L"test.quoted"});
   check(quoted == "spaces \"quotes\" end\\\n", "argument quoting");
   check(git.run(dir.wstring(), {L"invalid-command"}, cancel).exitCode != 0, "stderr exit code");

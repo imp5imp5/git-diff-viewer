@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "CommentEditor.h"
+#include "CommitPicker.h"
 #include "Screenshot.h"
 #include "Theme.h"
 #include <uxtheme.h>
@@ -159,7 +160,7 @@ MainWindow::~MainWindow()
   if (fieldBrush_)
     DeleteObject(fieldBrush_);
 }
-int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::wstring automationDirectory)
+int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::wstring automationDirectory, std::wstring hashPrefix)
 {
   instance_ = instance;
   directory_ = std::move(directory);
@@ -214,6 +215,24 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
   }
   ShowWindow(hwnd_, show == SW_HIDE ? SW_SHOWNORMAL : show);
   UpdateWindow(hwnd_);
+  if (!hashPrefix.empty())
+  {
+    std::atomic_bool cancel{false};
+    auto matches = GitRepository{}.findCommitsByPrefix(directory_, hashPrefix, cancel);
+    std::optional<std::wstring> selected;
+    if (matches.size() == 1)
+      selected = matches.front().id;
+    else
+      selected = chooseCommit(hwnd_, instance_, hashPrefix, matches);
+    if (selected)
+    {
+      SendMessageW(source_, CB_SETCURSEL, static_cast<WPARAM>(ChangeSource::Commit), 0);
+      sourceChanged();
+      SetWindowTextW(target_, selected->c_str());
+    }
+  }
+  if (!directory_.empty())
+    refresh();
   if (!automationDirectory_.empty())
     SetTimer(hwnd_, automationTimer, 100, nullptr);
   ACCEL entries[] = {{FVIRTKEY | FCONTROL, 'R', Refresh}, {FVIRTKEY, VK_F5, Refresh}, {FVIRTKEY | FCONTROL | FSHIFT, 'D', Toggle},
@@ -383,8 +402,6 @@ void MainWindow::createControls()
     SetWindowTextW(base_, rangeBase_.c_str());
   applyTheme();
   sourceChanged();
-  if (!directory_.empty())
-    refresh();
 }
 void MainWindow::updateFonts()
 {
