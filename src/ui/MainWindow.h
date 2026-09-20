@@ -10,7 +10,8 @@ namespace gdv
 class MainWindow
 {
 public:
-  int run(HINSTANCE instance, int show, std::wstring directory, std::wstring automationDirectory = L"", std::wstring hashPrefix = L"");
+  int run(HINSTANCE instance, int show, std::wstring directory, std::wstring automationDirectory = L"", std::wstring hashPrefix = L"",
+    bool startHistory = false);
   ~MainWindow();
 
 private:
@@ -123,6 +124,7 @@ private:
   std::wstring directory_, selectedPath_, selectedListKey_;
   std::wstring readyBase_, rangeBase_;
   ChangeSource baseMode_{ChangeSource::Unstaged};
+  std::wstring commitBranch_, commitBranchCommit_;
   std::wstring scrollContext_;
   std::wstring automationDirectory_;
   std::unordered_map<std::wstring, int> fileScrollPositions_;
@@ -131,6 +133,7 @@ private:
   std::unordered_map<std::wstring, DiffDocument> fullFileDocuments_;
   std::string pendingResponse_;
   bool pendingClose_{};
+  bool startHistory_{};
   RepositorySnapshot snapshot_;
   FileDiff commitMessageFile_;
   FileDiff listMessageFile_;
@@ -155,6 +158,6 @@ private:
   size_t historyInitialLimit_{10}, historyLimit_{10};
   std::wstring fullFileLoadingKey_;
   int historyListTop_{}, historyExplorerTop_{}, historyDiffTop_{}, statusAnimationPhase_{};
-  int fileListWheel_{}, explorerWheel_[2]{}, explorerBarDrag_[3]{-1, -1, -1};
+  int fileListWheel_{}, explorerWheel_[2]{}, explorerMessageWheel_{}, explorerBarDrag_[3]{-1, -1, -1};
 };
 } // namespace gdv

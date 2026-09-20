@@ -1,5 +1,7 @@
 #include "ui/MainWindow.h"
+#include <algorithm>
 #include <commctrl.h>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <objbase.h>
@@ -13,6 +15,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
   InitCommonControlsEx(&controls);
   int count = 0;
   auto args = CommandLineToArgvW(GetCommandLineW(), &count);
+  const bool startHistory = count == 1;
   std::wstring directory, automation, hashPrefix;
   bool hashRequested = false;
   for (int i = 1; i < count; ++i)
@@ -31,8 +34,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
   int result = 0;
   try
   {
-    if (hashRequested && hashPrefix.empty())
-      throw std::invalid_argument("--hash requires at least one hexadecimal character.");
+    if (hashRequested && (hashPrefix.size() < 4 || hashPrefix.size() > 64 ||
+                          !std::all_of(hashPrefix.begin(), hashPrefix.end(),
+                            [](wchar_t c) { return c < 128 && iswxdigit(c) != 0; })))
+      throw std::invalid_argument("--hash requires 4 to 64 hexadecimal characters.");
     if (directory.empty())
       directory = std::filesystem::current_path().wstring();
     if (!automation.empty())
@@ -41,7 +46,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
       std::filesystem::create_directories(automation);
     }
     gdv::MainWindow window;
-    result = window.run(instance, show, std::move(directory), automation, hashPrefix);
+    result = window.run(instance, show, std::move(directory), automation, hashPrefix, startHistory);
   }
   catch (const std::exception &error)
   {

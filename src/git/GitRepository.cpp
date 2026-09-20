@@ -2,6 +2,7 @@
 #include "diff/UnifiedDiffParser.h"
 #include <algorithm>
 #include <cwctype>
+#include <sstream>
 #include <stdexcept>
 #include <unordered_set>
 namespace gdv
@@ -44,41 +45,79 @@ std::vector<Commit> parseCommits(const std::string &log)
 std::vector<Commit> GitRepository::findCommitsByPrefix(const std::wstring &directory, const std::wstring &prefix,
   const std::atomic_bool &cancel) const
 {
-  if (prefix.empty() || prefix.size() > 64 ||
+  if (prefix.size() < 4 || prefix.size() > 64 ||
       !std::all_of(prefix.begin(), prefix.end(), [](wchar_t c) { return c < 128 && iswxdigit(c) != 0; }))
-    throw std::invalid_argument("--hash requires 1 to 64 hexadecimal characters.");
-  GitClient git;
-  auto result = git.run(directory, {L"log", L"--all", L"--encoding=UTF-8", L"--format=%H%x00%s%x00"}, cancel);
-  if (result.cancelled || cancel)
-    throw std::runtime_error("Cancelled");
-  if (result.exitCode)
-    throw std::runtime_error(result.err.empty() ? "Unable to list commits" : result.err);
+    throw std::invalid_argument("--hash requires 4 to 64 hexadecimal characters.");
   std::wstring needle = prefix;
   std::transform(needle.begin(), needle.end(), needle.begin(), towlower);
+  GitClient git;
+  auto currentBranch = trim(git.run(directory, {L"symbolic-ref", L"--quiet", L"--short", L"HEAD"}, cancel).out);
+  if (cancel)
+    throw std::runtime_error("Cancelled");
+
+  auto candidates = git.run(directory, {L"rev-parse", L"--disambiguate=" + needle}, cancel);
+  if (candidates.cancelled || cancel)
+    throw std::runtime_error("Cancelled");
+  if (candidates.exitCode)
+    throw std::runtime_error(candidates.err.empty() ? "Unable to resolve commit hash" : candidates.err);
   std::vector<Commit> matches;
-  size_t position = 0;
-  while (position < result.out.size())
+  std::istringstream input(candidates.out);
+  std::string line;
+  while (std::getline(input, line))
   {
-    auto separator = result.out.find('\0', position);
-    if (separator == std::string::npos)
-      break;
-    auto end = result.out.find('\0', separator + 1);
-    if (end == std::string::npos)
-      break;
-    auto id = fromUtf8(std::string_view(result.out).substr(position, separator - position));
-    if (id.size() >= needle.size() &&
-        std::equal(needle.begin(), needle.end(), id.begin(), [](wchar_t a, wchar_t b) { return a == towlower(b); }))
-      matches.push_back({std::move(id), fromUtf8(std::string_view(result.out).substr(separator + 1, end - separator - 1)), {}, {}});
-    position = end + 1;
-    while (position < result.out.size() && (result.out[position] == '\n' || result.out[position] == '\r'))
-      ++position;
+    auto id = trim(line);
+    if (id.empty())
+      continue;
+    auto commit = git.run(directory, {L"cat-file", L"-e", id + L"^{commit}"}, cancel);
+    if (commit.cancelled || cancel)
+      throw std::runtime_error("Cancelled");
+    if (commit.exitCode)
+      continue;
+    auto refs = git.run(directory, {L"for-each-ref", L"--contains=" + id, L"--format=%(refname:short)", L"refs/heads", L"refs/remotes"}, cancel);
+    if (refs.cancelled || cancel)
+      throw std::runtime_error("Cancelled");
+    if (refs.exitCode)
+      throw std::runtime_error(refs.err.empty() ? "Unable to check commit refs" : refs.err);
+    std::wstring branch;
+    std::istringstream branchInput(refs.out);
+    while (std::getline(branchInput, line))
+    {
+      auto name = trim(line);
+      if (name.empty() || (name.size() >= 5 && name.compare(name.size() - 5, 5, L"/HEAD") == 0))
+        continue;
+      if (branch.empty())
+        branch = name;
+      if (name == currentBranch)
+      {
+        branch = name;
+        break;
+      }
+    }
+    if (branch.empty())
+      continue;
+    auto details = git.run(directory, {L"show", L"-s", L"--format=%H%x00%s%x00%an%x00%B%x00", id}, cancel);
+    if (details.cancelled || cancel)
+      throw std::runtime_error("Cancelled");
+    if (details.exitCode)
+      throw std::runtime_error(details.err.empty() ? "Unable to read commit details" : details.err);
+    auto parsed = parseCommits(details.out);
+    if (!parsed.empty())
+    {
+      parsed.front().branch = branch;
+      matches.push_back(std::move(parsed.front()));
+    }
   }
   return matches;
 }
 RepositorySnapshot GitRepository::load(const CompareRequest &request, const std::atomic_bool &cancel) const
 {
-  GitClient git;
   RepositorySnapshot snapshot;
+  if (request.commitLookup)
+  {
+    snapshot.commits = findCommitsByPrefix(request.directory, request.commitPrefix, cancel);
+    return snapshot;
+  }
+  GitClient git;
   std::wstring cwd = request.directory;
   auto run = [&](const std::vector<std::wstring> &args, bool optional = false) {
     auto r = git.run(cwd, args, cancel);
@@ -99,11 +138,15 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
       throw std::runtime_error("Enter a commit or branch in the comparison fields, then click Compare.");
     return trim(run({L"rev-parse", L"--verify", L"--end-of-options", ref + L"^{commit}"}).out);
   };
-  auto commits = [&](const std::wstring &range, bool reverse = false, size_t skip = 0, size_t limit = 0) {
+  auto commits = [&](const std::wstring &range, bool reverse = false, size_t skip = 0, size_t limit = 0, bool firstParent = false, bool ancestryPath = false) {
     std::vector<std::wstring> logArgs = {
       L"log", L"--encoding=UTF-8", L"--format=%H%x00%s%x00%an%x00%H%nAuthor: %an <%ae>%nDate: %aI%n%n%B%x00"};
     if (reverse)
       logArgs.push_back(L"--reverse");
+    if (firstParent)
+    if (ancestryPath)
+      logArgs.push_back(L"--ancestry-path");
+      logArgs.push_back(L"--first-parent");
     if (skip)
       logArgs.push_back(L"--skip=" + std::to_wstring(skip));
     if (limit)
@@ -182,9 +225,22 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
     {
       auto id = resolve(request.target);
       snapshot.commitId = id;
+      if (!request.branch.empty())
+        snapshot.branch = request.branch;
       if (!request.selectedOnly)
         snapshot.commitMessage =
           trim(run({L"log", L"-1", L"--encoding=UTF-8", L"--format=%H%nAuthor: %an <%ae>%nDate: %aI%n%n%B", id, L"--"}).out);
+      if (!request.selectedOnly)
+      {
+        auto ancestors = commits(id, false, 0, 11, true);
+        std::vector<Commit> descendants;
+        if (snapshot.branch != L"Detached HEAD")
+          descendants = commits(id + L".." + snapshot.branch, false, 0, 5, true, true);
+        snapshot.commits = std::move(descendants);
+        snapshot.commits.insert(snapshot.commits.end(), std::make_move_iterator(ancestors.begin()),
+          std::make_move_iterator(ancestors.end()));
+        loadCommitDocuments();
+      }
       args[0] = L"show";
       args.insert(args.end(), {L"--format=", L"--root", L"--first-parent", id});
       snapshot.base = L"Commit " + request.target;

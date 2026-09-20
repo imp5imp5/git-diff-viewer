@@ -74,15 +74,15 @@ You can also supply a directory explicitly:
 & .\build\Release\gfd.exe "D:\dagor"
 ```
 
-To open a commit by the first hexadecimal characters of its SHA, pass `--hash:<prefix>`:
+To open a commit by the first four or more hexadecimal characters of its SHA, pass `--hash:<prefix>`:
 
 ```powershell
 & .\build\Release\gfd.exe "D:\dagor" --hash:a1b2
 ```
 
-The lookup searches commits reachable from local refs. A single match opens directly in **Single commit** mode. When several commits match, a themed dialog lists their short hashes and first commit-message lines so you can choose one. If none match, the dialog reports that and the application opens with its usual source.
+The lookup searches commits reachable from local and remote branches. A single match opens directly in **Single commit** mode. When several commits match, a themed dialog lists their short hashes, first commit-message lines, and containing branches so you can choose one; the selected branch is shown in the top **Branch** field. If none match, the dialog reports that and the application opens with its usual source.
 
-On the first launch, the application opens in **Unstaged** mode with the dark theme. Later launches restore the saved preferences from:
+When launched without command-line arguments, the application opens in **History** mode. Launches with arguments restore the saved comparison source; on the first such launch, the source is **Unstaged** with the dark theme.
 
 ```text
 %LOCALAPPDATA%\Gaijin\GitDiffViewer\settings.ini
@@ -102,7 +102,7 @@ Use the source dropdown to choose what to review:
 | **Unstaged** | Working tree against the index: tracked edits not yet staged. |
 | **All local · HEAD** | Working tree against `HEAD`, combining staged and unstaged changes. |
 | **Ready to push** | Local commits reachable from `HEAD` but not from the base ref; the combined diff compares the merge base with `HEAD`. |
-| **Single commit** | Changes introduced by the target commit. Merge commits use the first parent. |
+| **Single commit** | Up to five descendants appear above the target commit, followed by the target and up to ten first-parent ancestors in the same branch. Merge commits use the first parent. |
 | **Commit range** | Direct comparison between the base and target refs. |
 | **History** | Working-tree sections, outgoing commits, and recent commits from `HEAD` in one list. |
 

@@ -16,7 +16,7 @@ struct Picker
   HFONT font{};
   COLORREF text{}, selection{}, selectedText{}, border{}, listColor{};
   const std::vector<Commit> *matches{};
-  std::optional<std::wstring> result;
+  std::optional<Commit> result;
   bool dark{};
 };
 LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l)
@@ -74,6 +74,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l)
       SetBkMode(item->hDC, TRANSPARENT);
       SetTextColor(item->hDC, selected ? picker->selectedText : picker->text);
       auto label = commit.id.substr(0, 12) + L"  " + commit.subject;
+      if (!commit.branch.empty()) label += L"  [" + commit.branch + L"]";
       DrawTextW(item->hDC, label.c_str(), -1, &rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
       if (item->itemState & ODS_FOCUS)
         DrawFocusRect(item->hDC, &item->rcItem);
@@ -113,7 +114,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l)
         int index = static_cast<int>(SendMessageW(picker->list, LB_GETCURSEL, 0, 0));
         if (index >= 0 && static_cast<size_t>(index) < picker->matches->size())
         {
-          picker->result = (*picker->matches)[static_cast<size_t>(index)].id;
+          picker->result = (*picker->matches)[static_cast<size_t>(index)];
           DestroyWindow(window);
         }
         return 0;
@@ -129,7 +130,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l)
   return DefWindowProcW(window, message, w, l);
 }
 } // namespace
-std::optional<std::wstring> chooseCommit(HWND owner, HINSTANCE instance, const std::wstring &prefix,
+std::optional<Commit> chooseCommit(HWND owner, HINSTANCE instance, const std::wstring &prefix,
   const std::vector<Commit> &matches)
 {
   static bool registered = false;
@@ -158,7 +159,7 @@ std::optional<std::wstring> chooseCommit(HWND owner, HINSTANCE instance, const s
   auto scale = [&](int value) { return MulDiv(value, dpi, 96); };
   picker.font = CreateFontW(-MulDiv(10, dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
     CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-  int width = scale(680), height = scale(410);
+  int width = scale(900), height = scale(410);
   RECT ownerRect{};
   GetWindowRect(owner, &ownerRect);
   int x = (ownerRect.left + ownerRect.right - width) / 2;
@@ -199,6 +200,7 @@ std::optional<std::wstring> chooseCommit(HWND owner, HINSTANCE instance, const s
   for (const auto &commit : matches)
   {
     auto label = commit.id.substr(0, 12) + L"  " + commit.subject;
+    if (!commit.branch.empty()) label += L"  [" + commit.branch + L"]";
     SendMessageW(picker.list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
   }
   if (!matches.empty())

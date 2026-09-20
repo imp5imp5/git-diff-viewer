@@ -12,14 +12,14 @@ void check(bool condition, const char *message)
   if (!condition)
     throw std::runtime_error(message);
 }
-std::optional<std::wstring> run(bool dark, bool empty)
+std::optional<Commit> run(bool dark, bool empty)
 {
   darkTheme = dark;
   const std::vector<Commit> matches = empty
                                         ? std::vector<Commit>{}
                                         : std::vector<Commit>{{L"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", L"First subject", {}, {}},
                                             {L"aaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", L"Second subject", {}, {}}};
-  std::optional<std::wstring> result;
+  std::optional<Commit> result;
   std::atomic<DWORD> workerId{};
   std::thread worker([&] {
     workerId = GetCurrentThreadId();
@@ -89,9 +89,9 @@ int main()
 try
 {
   auto darkChoice = run(true, false);
-  check(darkChoice && *darkChoice == L"aaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "dark picker selection");
+  check(darkChoice && darkChoice->id == L"aaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "dark picker selection");
   auto lightChoice = run(false, false);
-  check(lightChoice && *lightChoice == *darkChoice, "light picker selection");
+  check(lightChoice && lightChoice->id == darkChoice->id, "light picker selection");
   check(!run(true, true), "no-match picker closes without a selection");
   return 0;
 }

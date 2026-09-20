@@ -146,6 +146,24 @@ void scrollListWheel(HWND hwnd, WPARAM w, int &remainder)
   if (step > 0)
     SendMessageW(hwnd, LB_SETTOPINDEX, std::clamp(top - detents * step, 0, std::max(0, count - page)), 0);
 }
+void scrollEditWheel(HWND hwnd, WPARAM w, int &remainder)
+{
+  int delta = GET_WHEEL_DELTA_WPARAM(w);
+  MSG queued{};
+  while (PeekMessageW(&queued, hwnd, WM_MOUSEWHEEL, WM_MOUSEWHEEL, PM_REMOVE))
+    delta += GET_WHEEL_DELTA_WPARAM(queued.wParam);
+  remainder += delta;
+  int detents = remainder / WHEEL_DELTA;
+  remainder %= WHEEL_DELTA;
+  if (!detents)
+    return;
+  UINT wheelLines = 3;
+  SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &wheelLines, 0);
+  int page = editPageRows(hwnd, reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0)));
+  int step = wheelLines == WHEEL_PAGESCROLL ? page : static_cast<int>(wheelLines);
+  if (step > 0)
+    SendMessageW(hwnd, EM_LINESCROLL, 0, -detents * step);
+}
 } // namespace
 MainWindow::~MainWindow()
 {
@@ -160,11 +178,13 @@ MainWindow::~MainWindow()
   if (fieldBrush_)
     DeleteObject(fieldBrush_);
 }
-int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::wstring automationDirectory, std::wstring hashPrefix)
+int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::wstring automationDirectory, std::wstring hashPrefix,
+  bool startHistory)
 {
   instance_ = instance;
   directory_ = std::move(directory);
   automationDirectory_ = std::move(automationDirectory);
+  startHistory_ = startHistory;
   if (automationDirectory_.empty())
     settings_ = Settings::loadUser();
   auto statsMode = settings_.string(L"FileStatsMode");
@@ -217,21 +237,15 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
   UpdateWindow(hwnd_);
   if (!hashPrefix.empty())
   {
-    std::atomic_bool cancel{false};
-    auto matches = GitRepository{}.findCommitsByPrefix(directory_, hashPrefix, cancel);
-    std::optional<std::wstring> selected;
-    if (matches.size() == 1)
-      selected = matches.front().id;
-    else
-      selected = chooseCommit(hwnd_, instance_, hashPrefix, matches);
-    if (selected)
-    {
-      SendMessageW(source_, CB_SETCURSEL, static_cast<WPARAM>(ChangeSource::Commit), 0);
-      sourceChanged();
-      SetWindowTextW(target_, selected->c_str());
-    }
+    CompareRequest request{directory_, source(source_), {}, {}, false};
+    request.commitLookup = true;
+    request.commitPrefix = hashPrefix;
+    loading_ = true;
+    startStatusAnimation();
+    SetWindowTextW(status_, L"Finding repository…");
+    controller_->request(std::move(request));
   }
-  if (!directory_.empty())
+  else if (!directory_.empty())
     refresh();
   if (!automationDirectory_.empty())
     SetTimer(hwnd_, automationTimer, 100, nullptr);
@@ -305,7 +319,9 @@ void MainWindow::createControls()
   for (auto name : {L"Staged", L"Unstaged", L"All local · HEAD", L"Ready to push", L"Single commit", L"Commit range"})
     SendMessageW(source_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name));
   SendMessageW(source_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"History"));
-  SendMessageW(source_, CB_SETCURSEL, automationDirectory_.empty() ? std::min<DWORD>(6, settings_.number(L"Source", 1)) : 1, 0);
+  SendMessageW(source_, CB_SETCURSEL, startHistory_ ? static_cast<WPARAM>(ChangeSource::History)
+                                                     : automationDirectory_.empty() ? std::min<DWORD>(6, settings_.number(L"Source", 1)) : 1,
+    0);
   view_ = control(L"BUTTON", L"Side-by-side", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE, View);
   SendMessageW(view_, BM_SETCHECK, side_ ? BST_CHECKED : BST_UNCHECKED, 0);
   fullFileButton_ = control(L"BUTTON", L"Full file", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE, FullFile);
@@ -660,7 +676,7 @@ void MainWindow::rebuildExplorer()
       if (item.kind == FileListItemKind::Section || item.kind == FileListItemKind::Commit || item.kind == FileListItemKind::LoadMore)
         add(item);
   }
-  else if (mode == ChangeSource::ReadyToPush || mode == ChangeSource::Range)
+  else if (mode == ChangeSource::Commit || mode == ChangeSource::ReadyToPush || mode == ChangeSource::Range)
   {
     if (mode == ChangeSource::ReadyToPush)
     {
@@ -878,6 +894,11 @@ void MainWindow::sourceChanged()
   else if (nextMode == ChangeSource::Range)
     SetWindowTextW(base_, rangeBase_.c_str());
   baseMode_ = nextMode;
+  if (nextMode != ChangeSource::Commit)
+  {
+    commitBranch_.clear();
+    commitBranchCommit_.clear();
+  }
   series_.clear();
   SendMessageW(commits_, CB_RESETCONTENT, 0, 0);
   layout();
@@ -897,6 +918,8 @@ void MainWindow::refresh(bool seriesSelection)
     return;
   }
   CompareRequest request{directory_, source(source_), getText(base_), getText(target_), false};
+  if (request.source == ChangeSource::Commit && request.target == commitBranchCommit_)
+    request.branch = commitBranch_;
   if (request.source == ChangeSource::History)
     request.historyLimit = historyLimit_;
   if (seriesSelection)
@@ -906,6 +929,7 @@ void MainWindow::refresh(bool seriesSelection)
     {
       request.source = ChangeSource::Commit;
       request.target = series_[static_cast<size_t>(index) - 1].id;
+      request.branch = commitBranch_;
     }
   }
   loading_ = true;
@@ -948,6 +972,27 @@ void MainWindow::loaded()
   loading_ = false;
   stopStatusAnimation();
   endPreview();
+  if (result->request.commitLookup)
+  {
+    if (result->error.empty())
+    {
+      std::optional<Commit> selected;
+      if (result->snapshot.commits.size() == 1)
+        selected = result->snapshot.commits.front();
+      else
+        selected = chooseCommit(hwnd_, instance_, result->request.commitPrefix, result->snapshot.commits);
+      if (selected)
+      {
+        SendMessageW(source_, CB_SETCURSEL, static_cast<WPARAM>(ChangeSource::Commit), 0);
+        sourceChanged();
+        commitBranch_ = selected->branch;
+        commitBranchCommit_ = selected->id;
+        SetWindowTextW(target_, selected->id.c_str());
+      }
+    }
+    refresh();
+    return;
+  }
   if (result->request.selectedOnly)
   {
     if (fullFileLoadingKey_ == result->request.selectionKey)
@@ -1058,6 +1103,8 @@ void MainWindow::loaded()
   scrollContext_ = snapshot_.root + L"\n" + std::to_wstring(static_cast<int>(result->request.source));
   if (result->request.source != ChangeSource::History)
     scrollContext_ += L"\n" + result->request.base + L"\n" + result->request.target;
+  if (result->request.source == ChangeSource::Commit && !snapshot_.commitId.empty())
+    selectedListKey_ = L"commit\n" + snapshot_.commitId;
   messageReturnIndex_ = -1;
   directory_ = snapshot_.root;
   if (result->request.source == ChangeSource::ReadyToPush)
@@ -1132,7 +1179,8 @@ void MainWindow::loaded()
     fallback = addItem({FileListItemKind::CommitMessage, nullptr, 0, 0, 0, L"<<Commit Message>>", L"message"});
   }
   bool history = result->request.source == ChangeSource::History;
-  bool grouped = result->request.source == ChangeSource::Range || result->request.source == ChangeSource::ReadyToPush;
+  bool grouped = result->request.source == ChangeSource::Commit || result->request.source == ChangeSource::Range ||
+                 result->request.source == ChangeSource::ReadyToPush;
   if (history)
   {
     auto addSection = [&](const wchar_t *label, const wchar_t *key, FileListGroup group, const DiffDocument *document) {
@@ -2370,8 +2418,14 @@ LRESULT CALLBACK MainWindow::explorerMessageProcedure(HWND hwnd, UINT msg, WPARA
     SendMessageW(hwnd, EM_SETSEL, 0, -1);
     return 0;
   }
+  if (msg == WM_MOUSEWHEEL)
+  {
+    scrollEditWheel(hwnd, w, self->explorerMessageWheel_);
+    self->updateExplorerBar(2);
+    return 0;
+  }
   auto result = DefSubclassProc(hwnd, msg, w, l);
-  if (msg == WM_MOUSEWHEEL || msg == WM_VSCROLL || msg == WM_KEYDOWN || msg == WM_SIZE)
+  if (msg == WM_VSCROLL || msg == WM_KEYDOWN || msg == WM_SIZE)
     self->updateExplorerBar(2);
   if (msg == WM_NCDESTROY)
     RemoveWindowSubclass(hwnd, explorerMessageProcedure, id);

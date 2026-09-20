@@ -27,10 +27,13 @@ struct CompareRequest
   std::wstring path;
   std::wstring selectionKey;
   bool selectedOnly{};
+  std::wstring commitPrefix;
+  bool commitLookup{};
+  std::wstring branch;
 };
 struct Commit
 {
-  std::wstring id, subject, author, message;
+  std::wstring id, subject, author, message, branch;
 };
 struct HistorySnapshot
 {

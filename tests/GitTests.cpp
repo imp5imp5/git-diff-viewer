@@ -363,21 +363,16 @@ try
   std::wstring upper = ids.front();
   std::transform(upper.begin(), upper.end(), upper.begin(), towupper);
   check(repo.findCommitsByPrefix(dir.wstring(), upper, cancel).size() == 1, "hash prefix ignores case");
-  bool ambiguous = false;
-  for (wchar_t hex : L"0123456789abcdef")
+  bool shortPrefix = false;
+  try
   {
-    if (!hex)
-      break;
-    auto matches = repo.findCommitsByPrefix(dir.wstring(), std::wstring(1, hex), cancel);
-    if (matches.size() > 1)
-    {
-      ambiguous = true;
-      for (const auto &match : matches)
-        check(match.id[0] == hex && !match.subject.empty(), "ambiguous hash shows subjects");
-      break;
-    }
+    repo.findCommitsByPrefix(dir.wstring(), L"abc", cancel);
   }
-  check(ambiguous, "short hash can match multiple commits");
+  catch (const std::invalid_argument &)
+  {
+    shortPrefix = true;
+  }
+  check(shortPrefix, "hash prefix shorter than four characters is rejected");
   bool invalidPrefix = false;
   try
   {
