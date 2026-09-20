@@ -82,7 +82,7 @@ To open a commit by the first four or more hexadecimal characters of its SHA, pa
 
 The lookup searches commits reachable from local and remote branches. A single match opens directly in **Single commit** mode. When several commits match, a themed dialog lists their short hashes, first commit-message lines, and containing branches so you can choose one; the selected branch is shown in the top **Branch** field. If none match, the dialog reports that and the application opens with its usual source.
 
-When launched without command-line arguments, the application opens in **History** mode. Launches with arguments restore the saved comparison source; on the first such launch, the source is **Unstaged** with the dark theme.
+When launched without command-line arguments, the application opens in **History** mode. Launches with arguments restore the saved comparison source; on the first such launch, the source is **Unstaged** with the dark theme and **Wide Diff** layout.
 
 ```text
 %LOCALAPPDATA%\Gaijin\GitDiffViewer\settings.ini

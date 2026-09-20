@@ -199,7 +199,7 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
   side_ = automationDirectory_.empty() && settings_.number(L"SideBySide", 0) != 0;
   darkTheme = !automationDirectory_.empty() || settings_.number(L"DarkTheme", 1) != 0;
   filePaneWidth_ = automationDirectory_.empty() ? static_cast<int>(std::min<DWORD>(settings_.number(L"FilePaneWidth", 0), 4096)) : 0;
-  explorerLayout_ = automationDirectory_.empty() && settings_.number(L"ExplorerLayout", 0) != 0;
+  explorerLayout_ = automationDirectory_.empty() && settings_.number(L"ExplorerLayout", 1) != 0;
   explorerCommitWidth_ = static_cast<int>(std::clamp<DWORD>(settings_.number(L"ExplorerCommitWidth", 300), 160, 4096));
   explorerMessageWidth_ = static_cast<int>(std::clamp<DWORD>(settings_.number(L"ExplorerMessageWidth", 360), 160, 4096));
   explorerTopHeight_ = static_cast<int>(std::clamp<DWORD>(settings_.number(L"ExplorerTopHeight", 280), 140, 4096));
