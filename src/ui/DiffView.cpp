@@ -52,6 +52,7 @@ DiffView::~DiffView()
 HWND DiffView::create(HWND parent, HINSTANCE instance)
 {
   WNDCLASSW wc{};
+  wc.style = CS_DBLCLKS;
   wc.hInstance = instance;
   wc.lpfnWndProc = procedure;
   wc.lpszClassName = L"GitDiffViewer.Diff";
@@ -847,6 +848,18 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
       wheel_ %= WHEEL_DELTA;
       if (lines)
         scrollTo(top_ - lines);
+      return 0;
+    }
+    case WM_LBUTTONDBLCLK:
+    {
+      if (GET_Y_LPARAM(l) < headerHeight_ || rows_.empty())
+        return 0;
+      int row = std::clamp(top_ + (GET_Y_LPARAM(l) - headerHeight_) / rowHeight_, 0, static_cast<int>(rows_.size()) - 1);
+      if (rows_[static_cast<size_t>(row)].comment == noLine)
+        return 0;
+      selected_ = anchor_ = row;
+      InvalidateRect(hwnd_, nullptr, FALSE);
+      SendMessageW(GetParent(hwnd_), WM_APP + 2, 0, 0);
       return 0;
     }
     case WM_LBUTTONDOWN:

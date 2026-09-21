@@ -70,7 +70,11 @@ private:
   void syncComments();
   void openCommentEditor();
   void copyComments();
+  void showAbout();
   void loadMoreHistory();
+  void toggleCommentsView();
+  void rebuildCommentsView();
+  std::wstring commentScope(const std::wstring &key) const;
   void loadMoreCommitContext(bool descendants);
   void loadMore(const FileListItem &item);
   int messageReturnIndex_{-1}, messageReturnTop_{};
@@ -108,7 +112,7 @@ private:
   std::wstring filePathAt(int index) const;
   static LRESULT CALLBACK filesProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   static LRESULT CALLBACK explorerListProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
-  HWND tooltip_{}, themeButton_{}, fullFileButton_{}, layoutButton_{}, copyCommentsButton_{}, explorerCommits_{}, explorerMessage_{},
+  HWND tooltip_{}, themeButton_{}, fullFileButton_{}, layoutButton_{}, copyCommentsButton_{}, commentsViewButton_{}, explorerCommits_{}, explorerMessage_{},
     explorerFiles_{}, explorerBars_[3]{}, explorerCommitLabel_{}, explorerMessageLabel_{}, explorerFilesLabel_{};
   std::wstring tooltipText_, savedCommit_, infoTooltipText_;
   int tooltipIndex_{-1};
@@ -134,6 +138,7 @@ private:
   std::wstring activeExplorerGroupKey_;
   std::unordered_map<std::wstring, DiffDocument> fullFileDocuments_;
   std::string pendingResponse_;
+  FileDiff commentsViewFile_;
   bool pendingClose_{};
   bool startHistory_{};
   RepositorySnapshot snapshot_;
@@ -154,12 +159,14 @@ private:
   std::unique_ptr<RepositoryController> controller_;
   Settings settings_;
   DiffView diff_;
-  bool side_{}, fullFile_{}, loading_{}, initialLoad_{true};
+  bool side_{}, fullFile_{}, commentsView_{}, commentsViewSide_{}, loading_{}, initialLoad_{true};
   bool loadMoreLoading_{};
   bool statusAnimationActive_{};
   size_t historyInitialLimit_{10}, historyLimit_{10};
   size_t commitAncestorLimit_{10}, commitDescendantLimit_{5};
   std::wstring fullFileLoadingKey_;
+  std::vector<size_t> commentsViewIndexes_;
+  std::wstring commentsViewScope_;
   int historyListTop_{}, historyExplorerTop_{}, historyDiffTop_{}, statusAnimationPhase_{};
   int fileListWheel_{}, explorerWheel_[2]{}, explorerMessageWheel_{}, explorerBarDrag_[3]{-1, -1, -1};
 };

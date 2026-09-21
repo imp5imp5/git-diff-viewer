@@ -152,7 +152,7 @@ std::string MainWindow::stateJson() const
   out += "],\"controls\":[";
   first = true;
   const std::pair<const wchar_t *, HWND> controls[] = {{L"refresh", refresh_}, {L"source", source_}, {L"view", view_},
-    {L"full-file", fullFileButton_}, {L"theme", themeButton_}, {L"copy-comments", copyCommentsButton_}, {L"info", info_},
+    {L"full-file", fullFileButton_}, {L"theme", themeButton_}, {L"copy-comments", copyCommentsButton_}, {L"comments-view", commentsViewButton_}, {L"info", info_},
     {L"base", base_}, {L"target", target_}, {L"compare", compare_}, {L"files", files_}, {L"commits", commits_},
     {L"diff", diff_.handle()}, {L"status", status_}, {L"layout", layoutButton_}, {L"explorer-commits", explorerCommits_},
     {L"explorer-message", explorerMessage_}, {L"explorer-files", explorerFiles_}, {L"explorer-commits-scroll", explorerBars_[0]},
@@ -166,7 +166,7 @@ std::string MainWindow::stateJson() const
       out += ',';
     first = false;
     bool toolbarButton = c.second == refresh_ || c.second == view_ || c.second == fullFileButton_ || c.second == themeButton_ ||
-                         c.second == layoutButton_ || c.second == copyCommentsButton_ || c.second == compare_;
+                         c.second == layoutButton_ || c.second == copyCommentsButton_ || c.second == commentsViewButton_ || c.second == compare_;
     std::wstring hint;
     if (toolbarButton)
     {
@@ -179,7 +179,7 @@ std::string MainWindow::stateJson() const
       SendMessageW(tooltip_, TTM_GETTEXTW, std::size(buffer), reinterpret_cast<LPARAM>(&tool));
       hint = buffer;
     }
-    bool checked = (c.second == view_ || c.second == fullFileButton_ || c.second == layoutButton_) &&
+    bool checked = (c.second == view_ || c.second == fullFileButton_ || c.second == layoutButton_ || c.second == commentsViewButton_) &&
                    SendMessageW(c.second, BM_GETCHECK, 0, 0) == BST_CHECKED;
     out += "{\"id\":" + json(c.first) + ",\"text\":" + json(label(c.second)) + ",\"hint\":" + json(hint) +
            ",\"checked\":" + (checked ? "true" : "false") +

@@ -11,6 +11,7 @@
 #include <iterator>
 #include <commctrl.h>
 #include <shobjidl.h>
+#include <shellapi.h>
 #include <sstream>
 #include <windowsx.h>
 namespace gdv
@@ -40,11 +41,19 @@ enum
   ExplorerLayout,
   ExplorerCommits,
   ExplorerFiles,
-  CopyComments
+  CopyComments,
+  CommentsView,
+  About
 };
 constexpr int minFilePaneWidth = 220;
 constexpr int minDiffPaneWidth = 300;
 constexpr UINT_PTR automationTimer = 1;
+HRESULT CALLBACK aboutCallback(HWND window, UINT notification, WPARAM, LPARAM value, LONG_PTR)
+{
+  if (notification == TDN_HYPERLINK_CLICKED)
+    ShellExecuteW(window, L"open", reinterpret_cast<const wchar_t *>(value), nullptr, nullptr, SW_SHOWNORMAL);
+  return S_OK;
+}
 constexpr UINT_PTR statusAnimationTimer = 2;
 constexpr UINT_PTR explorerResizeTimer = 3;
 std::wstring getText(HWND h)
@@ -251,6 +260,7 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
     SetTimer(hwnd_, automationTimer, 100, nullptr);
   ACCEL entries[] = {{FVIRTKEY | FCONTROL, 'R', Refresh}, {FVIRTKEY, VK_F5, Refresh}, {FVIRTKEY | FCONTROL | FSHIFT, 'D', Toggle},
     {FVIRTKEY | FCONTROL | FSHIFT, 'S', Screenshot}, {FVIRTKEY, VK_F2, CopyComments}, {FVIRTKEY | FCONTROL, VK_OEM_PLUS, ZoomIn},
+    {FVIRTKEY | FCONTROL, 'K', CommentsView}, {FVIRTKEY, VK_F1, About},
     {FVIRTKEY | FCONTROL, VK_OEM_MINUS, ZoomOut}, {FVIRTKEY | FCONTROL | FSHIFT, VK_OEM_PLUS, ZoomIn},
     {FVIRTKEY | FCONTROL, VK_DOWN, NextFile}, {FVIRTKEY | FCONTROL, VK_UP, PreviousFile}, {FVIRTKEY | FCONTROL, VK_NEXT, NextChange},
     {FVIRTKEY | FCONTROL, VK_PRIOR, PreviousChange}, {FVIRTKEY | FCONTROL, VK_ADD, ZoomIn},
@@ -328,6 +338,7 @@ void MainWindow::createControls()
   themeButton_ = control(L"BUTTON", L"\u25D0", WS_TABSTOP, Theme);
   layoutButton_ = control(L"BUTTON", L"Wide Diff", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE, ExplorerLayout);
   copyCommentsButton_ = control(L"BUTTON", L"\u29C9", WS_TABSTOP, CopyComments);
+  commentsViewButton_ = control(L"BUTTON", L"\xD83D\xDCAC", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE, CommentsView);
   EnableWindow(copyCommentsButton_, FALSE);
   SendMessageW(layoutButton_, BM_SETCHECK, explorerLayout_ ? BST_CHECKED : BST_UNCHECKED, 0);
   baseLabel_ = control(L"STATIC", L"Base branch / ref", 0, 0);
@@ -380,6 +391,7 @@ void MainWindow::createControls()
   SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
   const std::pair<HWND, const wchar_t *> buttonHints[] = {
     {refresh_, L"Reload Git changes and clear review comments.\nHotkeys: F5 or Ctrl+R."},
+    {commentsViewButton_, L"Show only review comments for the current commit.\nHotkey: Ctrl+K."},
     {view_, L"Switch between side-by-side and unified diffs.\nHotkey: Ctrl+Shift+D."},
     {fullFileButton_, L"Show the complete selected file or only changed hunks.\nHotkey: F (outside text fields)."},
     {themeButton_, L"Switch between dark and light themes."},
@@ -479,6 +491,8 @@ void MainWindow::layout()
   move(layoutButton_, toolbarX, pad, scale(90), row);
   toolbarX += scale(102);
   move(copyCommentsButton_, toolbarX, pad, row, row);
+  toolbarX += scale(42);
+  move(commentsViewButton_, toolbarX, pad, row, row);
   toolbarX += scale(42);
   int y = pad + row + gap;
   if (width < toolbarX + scale(220))
@@ -1631,6 +1645,11 @@ void MainWindow::selectFile()
 void MainWindow::syncComments()
 {
   std::vector<ReviewComment> visible;
+  if (commentsView_)
+  {
+    rebuildCommentsView();
+    return;
+  }
   if (diff_.file() && !diff_.plainText())
     for (const auto &comment : comments_)
       if (comment.key == selectedListKey_)
@@ -1642,8 +1661,138 @@ void MainWindow::copyComments()
   if (!comments_.empty())
     copyFileName(hwnd_, formatReviewComments(comments_));
 }
+std::wstring MainWindow::commentScope(const std::wstring &key) const
+{
+  auto first = key.find(L'\n');
+  if (first == std::wstring::npos)
+    return key;
+  auto last = key.rfind(L'\n');
+  auto group = key.substr(0, first);
+  if ((group == L"commit" || group == L"outgoing" || group == L"history") && first == last)
+    return key;
+  return key.substr(0, last);
+}
+void MainWindow::rebuildCommentsView()
+{
+  commentsViewIndexes_.clear();
+  commentsViewFile_ = {};
+  commentsViewFile_.newPath = L"Review comments";
+  auto scope = commentsViewScope_.empty() ? commentScope(selectedListKey_) : commentsViewScope_;
+  std::vector<ReviewComment> visible;
+  for (size_t index = 0; index < comments_.size(); ++index)
+    if (commentScope(comments_[index].key) == scope)
+    {
+      commentsViewIndexes_.push_back(index);
+      visible.push_back(comments_[index]);
+    }
+  for (size_t visibleIndex = 0; visibleIndex < commentsViewIndexes_.size(); ++visibleIndex)
+  {
+    const auto &comment = comments_[commentsViewIndexes_[visibleIndex]];
+    const FileDiff *file = nullptr;
+    for (const auto &item : fileListItems_)
+      if (item.file && item.key == comment.key)
+      {
+        file = item.file;
+        break;
+      }
+    if (!file)
+      continue;
+    for (const auto &source : file->hunks)
+    {
+      std::vector<size_t> after;
+      for (size_t line = 0; line < source.lines.size(); ++line)
+        if (source.lines[line].type != DiffLineType::Removed && source.lines[line].type != DiffLineType::Meta)
+          after.push_back(line);
+      size_t first = after.size(), last = 0;
+      for (size_t line = 0; line < after.size(); ++line)
+      {
+        const auto &value = source.lines[after[line]];
+        if (value.newLine && *value.newLine >= comment.firstLine && *value.newLine <= comment.lastLine)
+        {
+          first = std::min(first, line);
+          last = line;
+        }
+      }
+      if (first == after.size())
+        continue;
+      DiffHunk block = source;
+      first = first > 4 ? first - 4 : 0;
+      last = std::min(after.size() - 1, last + 4);
+      block.lines.clear();
+      for (size_t line = first; line <= last; ++line)
+        block.lines.push_back(source.lines[after[line]]);
+      block.header = L"File: " + comment.path;
+      commentsViewFile_.hunks.push_back(std::move(block));
+      break;
+    }
+  }
+  if (commentsViewFile_.hunks.empty())
+  {
+    diff_.setMessage(L"No review comments for the current commit.");
+    return;
+  }
+  diff_.setFile(&commentsViewFile_, false);
+  diff_.setComments(std::move(visible));
+}
+void MainWindow::toggleCommentsView()
+{
+  commentsView_ = SendMessageW(commentsViewButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+  if (commentsView_)
+  {
+    auto key = selectedListKey_;
+    if (key.empty() || key.rfind(L"history-section\n", 0) == 0)
+      key = activeExplorerGroupKey_;
+    commentsViewScope_ = commentScope(key);
+    commentsViewSide_ = side_;
+    diff_.setSideBySide(false);
+    SendMessageW(view_, BM_SETCHECK, BST_UNCHECKED, 0);
+    EnableWindow(view_, FALSE);
+    rebuildCommentsView();
+  }
+  else
+  {
+    commentsViewScope_.clear();
+    diff_.setSideBySide(commentsViewSide_);
+    SendMessageW(view_, BM_SETCHECK, commentsViewSide_ ? BST_CHECKED : BST_UNCHECKED, 0);
+    EnableWindow(view_, TRUE);
+    selectFile();
+  }
+  updateStatus();
+}
+void MainWindow::showAbout()
+{
+  TASKDIALOGCONFIG dialog{sizeof(dialog)};
+  dialog.hwndParent = hwnd_;
+  dialog.pszWindowTitle = L"About GitDiffViewer";
+  dialog.pszMainInstruction = L"GitDiffViewer";
+  dialog.pszContent = L"Version 6\n\nAuthor: Aleksei Borisov\n2026\nLicensed under the MIT License\n\n"
+                      L"<a href=\"https://github.com/imp5imp5/git-diff-viewer\">github.com/imp5imp5/git-diff-viewer</a>";
+  dialog.dwFlags = TDF_ENABLE_HYPERLINKS | TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
+  dialog.dwCommonButtons = TDCBF_OK_BUTTON;
+  dialog.pfCallback = aboutCallback;
+  TaskDialogIndirect(&dialog, nullptr, nullptr, nullptr);
+}
 void MainWindow::openCommentEditor()
 {
+  if (commentsView_)
+  {
+    int selected = diff_.selectedComment();
+    if (selected < 0 || static_cast<size_t>(selected) >= commentsViewIndexes_.size())
+      return;
+    size_t existing = commentsViewIndexes_[static_cast<size_t>(selected)];
+    auto edit = editReviewComment(hwnd_, instance_, &comments_[existing].text);
+    if (edit.action == CommentEditAction::Cancel)
+      return;
+    if (edit.action == CommentEditAction::Delete)
+      comments_.erase(comments_.begin() + static_cast<std::ptrdiff_t>(existing));
+    else
+      comments_[existing].text = std::move(edit.text);
+    rebuildCommentsView();
+    EnableWindow(copyCommentsButton_, !comments_.empty());
+    InvalidateRect(files_, nullptr, FALSE);
+    InvalidateRect(explorerFiles_, nullptr, FALSE);
+    return;
+  }
   if (diff_.plainText() || !diff_.file())
     return;
   const FileListItem *item = nullptr;
@@ -1834,7 +1983,7 @@ void MainWindow::updateStatus()
     status += L"    " + snapshot_.notice;
   else
     status += L"    |    F5 Refresh | F Full file | Ctrl+PgUp/PgDn Change | Ctrl+Down/Up List | Space Commit message | Ctrl+Shift+D "
-              L"View | C Comment | F2 Copy comments | Ctrl+C Copy";
+              L"View | C Comment | Ctrl+K Comments | F2 Copy comments | Ctrl+C Copy";
   SetWindowTextW(status_, status.c_str());
 }
 void MainWindow::rememberFileScroll()
@@ -1849,6 +1998,8 @@ std::wstring MainWindow::fileScrollKey(const std::wstring &path) const
 }
 void MainWindow::toggle()
 {
+  if (commentsView_)
+    return;
   side_ = !side_;
   diff_.setSideBySide(side_);
   SendMessageW(view_, BM_SETCHECK, side_ ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -2753,13 +2904,15 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
       }
       if (hdr->code == NM_CUSTOMDRAW &&
           (hdr->hwndFrom == refresh_ || hdr->hwndFrom == compare_ || hdr->hwndFrom == themeButton_ || hdr->hwndFrom == view_ ||
-            hdr->hwndFrom == fullFileButton_ || hdr->hwndFrom == layoutButton_ || hdr->hwndFrom == copyCommentsButton_) &&
+            hdr->hwndFrom == fullFileButton_ || hdr->hwndFrom == layoutButton_ || hdr->hwndFrom == copyCommentsButton_ ||
+            hdr->hwndFrom == commentsViewButton_) &&
           darkTheme)
       {
         auto draw = reinterpret_cast<NMCUSTOMDRAW *>(l);
         if (draw->dwDrawStage == CDDS_PREPAINT)
         {
-          bool checked = (hdr->hwndFrom == view_ || hdr->hwndFrom == fullFileButton_ || hdr->hwndFrom == layoutButton_) &&
+          bool checked = (hdr->hwndFrom == view_ || hdr->hwndFrom == fullFileButton_ || hdr->hwndFrom == layoutButton_ ||
+                          hdr->hwndFrom == commentsViewButton_) &&
                          SendMessageW(hdr->hwndFrom, BM_GETCHECK, 0, 0) == BST_CHECKED;
           auto buttonBrush = checked ? CreateSolidBrush(themeColor(ThemeColor::ListSelection)) : fieldBrush_;
           FillRect(draw->hdc, &draw->rc, buttonBrush);
@@ -2957,7 +3110,18 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
           if (HIWORD(w) == LBN_SELCHANGE)
             selectExplorerFile(static_cast<int>(SendMessageW(explorerFiles_, LB_GETCURSEL, 0, 0)));
           break;
+        case CommentsView:
+          if (HIWORD(w) == BN_CLICKED)
+            toggleCommentsView();
+          else
+          {
+            commentsView_ = !commentsView_;
+            SendMessageW(commentsViewButton_, BM_SETCHECK, commentsView_ ? BST_CHECKED : BST_UNCHECKED, 0);
+            toggleCommentsView();
+          }
+          break;
         case Refresh: refresh(); break;
+        case About: showAbout(); break;
         case CopyComments: copyComments(); break;
         case Compare: refresh(); break;
         case Source:

@@ -209,6 +209,22 @@ CommentEditResult editReviewComment(HWND owner, HINSTANCE instance, const std::w
     if (
       message.message == WM_KEYDOWN && message.wParam == VK_RETURN && (GetKeyState(VK_CONTROL) & 0x8000) && GetFocus() == editor.edit)
       SendMessageW(dialog, WM_COMMAND, saveId, 0);
+    else if (message.message == WM_KEYDOWN && message.wParam == VK_BACK && (GetKeyState(VK_CONTROL) & 0x8000) &&
+             GetFocus() == editor.edit)
+    {
+      DWORD start{}, end{};
+      SendMessageW(editor.edit, EM_GETSEL, reinterpret_cast<WPARAM>(&start), reinterpret_cast<LPARAM>(&end));
+      if (start == end)
+      {
+        auto text = value(editor.edit);
+        while (start && iswspace(text[start - 1]))
+          --start;
+        while (start && !iswspace(text[start - 1]))
+          --start;
+      }
+      SendMessageW(editor.edit, EM_SETSEL, start, end);
+      SendMessageW(editor.edit, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(L""));
+    }
     else if (!IsDialogMessageW(dialog, &message))
     {
       TranslateMessage(&message);

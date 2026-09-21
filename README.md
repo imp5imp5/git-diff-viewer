@@ -12,7 +12,7 @@ The application uses the installed Git command-line client to read repository da
 - Inspect local commits relative to an upstream or an explicitly selected base branch.
 - Switch between unified and side-by-side diffs and between the classic and Wide Diff window layouts without reloading Git data, while preserving the current viewing position.
 - Display line numbers, added and removed lines, file statuses, renames, and binary-file notices.
-- Add inline review comments to selected After lines and copy all comments as review text.
+- Add, edit, delete, and review inline comments on changed lines; copy all comments as review text.
 - Read full commit messages in Wide Diff, or preview them by hovering over entries in the local commit dropdown.
 - Browse Unicode paths and text, with virtualized diff rendering and background Git loading.
 - Adjust the diff font size and switch between dark and light themes.
@@ -152,7 +152,7 @@ Use **Full file** or press `F` to show every line of the selected changed text f
 | `Ctrl+Shift+D` | Toggle unified / side-by-side layout. |
 | `F` while not editing a ref or using a dropdown | Toggle full-file context. |
 | `Ctrl+Page Up` / `Ctrl+Page Down` | Go to the previous / next changed block or comment. |
-| `C` with After lines selected in the diff | Add or edit the first overlapping comment; the dialog can also delete it. |
+| `C` with After lines selected in the diff, or double-click a comment | Add, edit, or delete a review comment. `Ctrl+Backspace` in its editor deletes the preceding word. |
 | `F2` or **Copy comments** | Copy all session comments to the clipboard. |
 | `Ctrl+Down` / `Ctrl+Up` | Select the next / previous item in **Changed files**, or in the active Commits or Files panel in Wide Diff. |
 | `Space` with the classic file list, diff, or closed commit dropdown focused | Toggle the current commit message, restoring the previous file and scroll position on return. |
@@ -162,6 +162,8 @@ Use **Full file** or press `F` to show every line of the selected changed text f
 | `Ctrl+-` / `Ctrl+=` | Decrease / increase diff font size. Numpad plus and minus also work. |
 | Mouse drag in the diff | Select rows. |
 | Mouse drag between the file list and diff | Resize the file list. |
+| `Ctrl+K` or **U+1F4AC** | Toggle the current commit's comments view. |
+| `F1` | Open the About dialog. |
 | `Shift+click` | Extend the row selection. |
 | `Ctrl+A` with the diff focused | Select all diff rows. |
 | `Ctrl+A` with **Commit message** focused | Select the full message text. |
