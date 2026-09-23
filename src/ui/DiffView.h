@@ -60,6 +60,9 @@ private:
   RECT scrollbarThumbRect() const;
   void copy();
   void stopAutoScroll();
+  void clearIdentifierHover();
+  void scheduleIdentifierHover(POINT point);
+  std::wstring identifierAt(POINT point, RECT *bounds = nullptr) const;
   bool autoScroll_{};
   POINT autoOrigin_{};
   double autoRemainder_{};
@@ -80,6 +83,9 @@ private:
   int activeSearch_{-1};
   bool searchFlashing_{};
   std::wstring searchText_;
+  std::wstring hoverIdentifier_;
+  POINT hoverPoint_{-1, -1};
+  RECT hoverBounds_{};
   int top_{}, horizontal_{}, selected_{-1}, anchor_{-1}, rowHeight_{22}, charWidth_{8}, headerHeight_{62}, maxWidth_{}, wheel_{},
     zoomWheel_{}, numberDigits_{7}, fontPoints_{11};
   UINT dpi_{96};

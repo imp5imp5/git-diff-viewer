@@ -2,6 +2,7 @@
 #include "Theme.h"
 #include <algorithm>
 #include <climits>
+#include <cwctype>
 #include <sstream>
 #include <windowsx.h>
 namespace gdv
@@ -11,6 +12,9 @@ namespace
 constexpr UINT_PTR autoScrollTimer = 2;
 constexpr UINT_PTR changeFlashTimer = 3;
 constexpr UINT_PTR searchFlashTimer = 4;
+constexpr UINT_PTR identifierHoverTimer = 5;
+bool identifierPart(wchar_t c) { return c == L'_' || std::iswalnum(c) != 0; }
+bool identifierStart(wchar_t c) { return c == L'_' || std::iswalpha(c) != 0; }
 std::wstring foldSearchText(std::wstring_view value)
 {
   std::wstring folded(value);
@@ -112,6 +116,7 @@ void DiffView::setFile(const FileDiff *file, bool preserve, bool plainText)
   stopAutoScroll();
   stopChangeFlash();
   stopSearchFlash();
+  clearIdentifierHover();
   plain_ = plainText;
   headerHeight_ = plain_ ? 0 : std::max(MulDiv(62, static_cast<int>(dpi_), 96), rowHeight_ * 2);
   const FileDiff *previousFile = file_;
@@ -180,6 +185,7 @@ void DiffView::setSideBySide(bool enabled)
 {
   if (side_ == enabled)
     return;
+  clearIdentifierHover();
   side_ = enabled;
   auto previousRows = rows_;
   rows_ = file_ ? buildPresentation(*file_, side_) : std::vector<PresentationRow>{};
@@ -397,6 +403,7 @@ bool DiffView::findNext(int direction)
     while (target > 0 && searchRows_[static_cast<size_t>(target)] > top_)
       --target;
   }
+  clearIdentifierHover();
   activeSearch_ = target;
   top_ = searchRows_[static_cast<size_t>(target)] - pageRows() / 2;
   ensureSearchVisible(searchRows_[static_cast<size_t>(target)]);
@@ -464,6 +471,7 @@ void DiffView::updateScroll()
 }
 void DiffView::scrollTo(int row)
 {
+  clearIdentifierHover();
   activeChange_ = -1;
   top_ = row;
   updateScroll();
@@ -491,6 +499,7 @@ void DiffView::showChangeBlock(size_t index, bool flash)
 {
   if (index >= navigationBlocks_.size())
     return;
+  clearIdentifierHover();
   const auto &block = navigationBlocks_[index];
   int first = static_cast<int>(block.first), last = static_cast<int>(block.last);
   int page = pageRows(), height = last - first + 1;
@@ -750,6 +759,21 @@ void DiffView::paint(HDC printDC)
     auto expanded = expandedLineText(l->text);
     content.left -= horizontal_;
     content.right = std::max(content.right, content.left + maxWidth_ + charWidth_);
+    if (!hoverIdentifier_.empty())
+    {
+      size_t found = 0;
+      while ((found = expanded.find(hoverIdentifier_, found)) != std::wstring::npos)
+      {
+        size_t last = found + hoverIdentifier_.size();
+        if ((found == 0 || !identifierPart(expanded[found - 1])) && (last == expanded.size() || !identifierPart(expanded[last])))
+        {
+          RECT highlight{content.left + static_cast<int>(found) * charWidth_, content.top + 1,
+            content.left + static_cast<int>(last) * charWidth_, content.bottom - 1};
+          fill(dc, highlight, ThemeColor::IdentifierHover);
+        }
+        found = last;
+      }
+    }
     text(dc, content, expanded, ThemeColor::DiffText);
     drawSearchBox(content, {content.left + horizontal_, content.top, r.right, content.bottom}, expanded, searchActive);
     RestoreDC(dc, saved);
@@ -904,6 +928,71 @@ void DiffView::stopAutoScroll()
   SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
   InvalidateRect(hwnd_, nullptr, FALSE);
 }
+void DiffView::clearIdentifierHover()
+{
+  if (hwnd_)
+    KillTimer(hwnd_, identifierHoverTimer);
+  hoverPoint_ = {-1, -1};
+  hoverBounds_ = {};
+  if (!hoverIdentifier_.empty())
+  {
+    hoverIdentifier_.clear();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+  }
+}
+void DiffView::scheduleIdentifierHover(POINT point)
+{
+  clearIdentifierHover();
+  if (autoScroll_ || dragging_ || scrollbarDragging_ || rows_.empty())
+    return;
+  RECT area{};
+  GetClientRect(hwnd_, &area);
+  if (point.x < 0 || point.y < headerHeight_ || point.x >= area.right - scrollbarWidth() || point.y >= area.bottom)
+    return;
+  hoverPoint_ = point;
+  SetTimer(hwnd_, identifierHoverTimer, 300, nullptr);
+}
+std::wstring DiffView::identifierAt(POINT point, RECT *bounds) const
+{
+  RECT area{};
+  GetClientRect(hwnd_, &area);
+  int contentRight = static_cast<int>(area.right) - scrollbarWidth();
+  if (point.x < 0 || point.x >= contentRight || point.y < headerHeight_ || point.y >= area.bottom || charWidth_ <= 0)
+    return {};
+  int index = top_ + (point.y - headerHeight_) / rowHeight_;
+  if (index < 0 || index >= static_cast<int>(rows_.size()))
+    return {};
+  const auto &row = rows_[static_cast<size_t>(index)];
+  if (row.comment != noLine || !row.meta.empty())
+    return {};
+  int cellLeft = side_ && point.x >= contentRight / 2 ? contentRight / 2 : 0;
+  int gutter = (side_ ? numberDigits_ + 2 : numberDigits_ * 2 + 3) * charWidth_;
+  if (point.x < cellLeft + gutter)
+    return {};
+  const DiffLine *value = side_ ? line(row, cellLeft ? row.right : row.left) : line(row, row.left != noLine ? row.left : row.right);
+  if (!value)
+    return {};
+  auto expanded = expandedLineText(value->text);
+  int column = (point.x - cellLeft - gutter + horizontal_) / charWidth_;
+  if (column < 0 || static_cast<size_t>(column) >= expanded.size() || !identifierPart(expanded[static_cast<size_t>(column)]))
+    return {};
+  size_t first = static_cast<size_t>(column), last = first + 1;
+  while (first > 0 && identifierPart(expanded[first - 1]))
+    --first;
+  if (!identifierStart(expanded[first]))
+    return {};
+  while (last < expanded.size() && identifierPart(expanded[last]))
+    ++last;
+  if (bounds)
+  {
+    int textLeft = cellLeft + gutter;
+    int cellRight = side_ && cellLeft == 0 ? contentRight / 2 : contentRight;
+    int rowTop = headerHeight_ + (index - top_) * rowHeight_;
+    *bounds = {std::max(textLeft, textLeft - horizontal_ + static_cast<int>(first) * charWidth_), rowTop,
+      std::min(cellRight, textLeft - horizontal_ + static_cast<int>(last) * charWidth_), rowTop + rowHeight_};
+  }
+  return expanded.substr(first, last - first);
+}
 LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
 {
   switch (msg)
@@ -913,12 +1002,14 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
     case WM_PRINTCLIENT: paint(reinterpret_cast<HDC>(w)); return 0;
     case WM_ERASEBKGND: return 1;
     case WM_SIZE:
+      clearIdentifierHover();
       updateScroll();
       InvalidateRect(hwnd_, nullptr, FALSE);
       return 0;
     case WM_GETDLGCODE: return DLGC_WANTARROWS | DLGC_WANTCHARS;
     case WM_HSCROLL:
     {
+      clearIdentifierHover();
       SCROLLINFO info{sizeof(info), SIF_ALL};
       GetScrollInfo(hwnd_, SB_HORZ, &info);
       int pos = horizontal_, step = charWidth_ * 3;
@@ -940,6 +1031,7 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
     }
     case WM_MBUTTONDOWN:
     {
+      clearIdentifierHover();
 
       if (autoScroll_)
       {
@@ -964,6 +1056,20 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
     }
     case WM_MBUTTONUP: return 0;
     case WM_TIMER:
+      if (w == identifierHoverTimer)
+      {
+        KillTimer(hwnd_, identifierHoverTimer);
+        POINT cursor{};
+        GetCursorPos(&cursor);
+        ScreenToClient(hwnd_, &cursor);
+        if (cursor.x == hoverPoint_.x && cursor.y == hoverPoint_.y && !dragging_ && !scrollbarDragging_ && !autoScroll_)
+        {
+          hoverIdentifier_ = identifierAt(cursor, &hoverBounds_);
+          if (!hoverIdentifier_.empty())
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+        return 0;
+      }
       if (w == searchFlashTimer && searchFlashing_)
       {
         stopSearchFlash();
@@ -1018,10 +1124,12 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
       break;
     case WM_KILLFOCUS:
     case WM_CANCELMODE:
+      clearIdentifierHover();
       scrollbarDragging_ = false;
       stopAutoScroll();
       break;
     case WM_RBUTTONDOWN:
+      clearIdentifierHover();
 
       if (autoScroll_)
       {
@@ -1031,6 +1139,7 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
       break;
     case WM_MOUSEWHEEL:
     {
+      clearIdentifierHover();
       stopAutoScroll();
       int delta = GET_WHEEL_DELTA_WPARAM(w);
       MSG queued{};
@@ -1064,6 +1173,7 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
     }
     case WM_LBUTTONDOWN:
     {
+      clearIdentifierHover();
 
       if (autoScroll_)
       {
@@ -1111,6 +1221,8 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
       }
       TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd_, 0};
       TrackMouseEvent(&tracking);
+      if ((point.x != hoverPoint_.x || point.y != hoverPoint_.y) && (hoverIdentifier_.empty() || !PtInRect(&hoverBounds_, point)))
+        scheduleIdentifierHover(point);
       if (scrollbarDragging_)
       {
         dragVerticalScrollbar(point.y);
@@ -1128,6 +1240,7 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
       return 0;
     }
     case WM_MOUSELEAVE:
+      clearIdentifierHover();
       if (scrollbarHover_ && !scrollbarDragging_)
       {
         scrollbarHover_ = false;
@@ -1150,6 +1263,7 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
         ReleaseCapture();
       return 0;
     case WM_CAPTURECHANGED:
+      clearIdentifierHover();
       dragging_ = false;
       scrollbarDragging_ = false;
       stopAutoScroll();
@@ -1196,11 +1310,13 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
         case VK_HOME: next = 0; break;
         case VK_END: next = static_cast<int>(rows_.size()) - 1; break;
         case VK_LEFT:
+          clearIdentifierHover();
           horizontal_ -= charWidth_ * 3;
           updateScroll();
           InvalidateRect(hwnd_, nullptr, FALSE);
           return 0;
         case VK_RIGHT:
+          clearIdentifierHover();
           horizontal_ += charWidth_ * 3;
           updateScroll();
           InvalidateRect(hwnd_, nullptr, FALSE);
