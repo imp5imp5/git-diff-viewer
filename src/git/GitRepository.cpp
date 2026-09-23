@@ -111,6 +111,26 @@ std::vector<Commit> GitRepository::findCommitsByPrefix(const std::wstring &direc
   }
   return matches;
 }
+std::vector<std::wstring> GitRepository::listRefs(const std::wstring &directory, const std::atomic_bool &cancel) const
+{
+  auto result = GitClient{}.run(directory, {L"for-each-ref", L"--format=%(refname:short)", L"refs/heads", L"refs/remotes"}, cancel);
+  if (result.cancelled || cancel)
+    throw std::runtime_error("Cancelled");
+  if (result.exitCode)
+    throw std::runtime_error(result.err.empty() ? "Unable to list branches" : result.err);
+  std::vector<std::wstring> refs;
+  std::istringstream input(result.out);
+  std::string line;
+  while (std::getline(input, line))
+  {
+    auto ref = trim(line);
+    if (!ref.empty() && !(ref.size() >= 5 && ref.compare(ref.size() - 5, 5, L"/HEAD") == 0))
+      refs.push_back(std::move(ref));
+  }
+  std::sort(refs.begin(), refs.end());
+  refs.erase(std::unique(refs.begin(), refs.end()), refs.end());
+  return refs;
+}
 RepositorySnapshot GitRepository::load(const CompareRequest &request, const std::atomic_bool &cancel) const
 {
   RepositorySnapshot snapshot;
@@ -147,7 +167,12 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
   snapshot.branch = trim(run({L"symbolic-ref", L"--quiet", L"--short", L"HEAD"}, true).out);
   if (snapshot.branch.empty())
     snapshot.branch = L"Detached HEAD";
-  snapshot.upstream = trim(run({L"rev-parse", L"--abbrev-ref", L"--symbolic-full-name", L"@{upstream}"}, true).out);
+  if (!request.viewBranch.empty())
+    snapshot.branch = request.viewBranch;
+  auto trackedRef = request.viewBranch.empty() ? L"@{upstream}" : request.viewBranch + L"@{upstream}";
+  snapshot.upstream = trim(run({L"rev-parse", L"--abbrev-ref", L"--symbolic-full-name", trackedRef}, true).out);
+  if (!request.viewUpstream.empty())
+    snapshot.upstream = request.viewUpstream;
   auto resolve = [&](const std::wstring &ref) {
     if (ref.empty())
       throw std::runtime_error("Enter a commit or branch in the comparison fields, then click Compare.");
@@ -235,7 +260,7 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
         snapshot.notice = L"No upstream configured. Enter a base branch (for example main) and click Compare.";
         return snapshot;
       }
-      auto baseId = resolve(base), head = resolve(L"HEAD");
+      auto baseId = resolve(base), head = resolve(request.viewBranch.empty() ? L"HEAD" : request.viewBranch);
       snapshot.base = base;
       if (!request.selectedOnly)
       {
@@ -249,7 +274,7 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
     {
       auto id = resolve(request.target);
       snapshot.commitId = id;
-      if (!request.branch.empty())
+      if (!request.branch.empty() && request.viewBranch.empty())
         snapshot.branch = request.branch;
       if (!request.selectedOnly)
         snapshot.commitMessage =
@@ -292,7 +317,8 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
     case ChangeSource::History:
     {
       snapshot.base = L"History";
-      auto headResult = run({L"rev-parse", L"--verify", L"HEAD"}, true);
+      auto headResult =
+        run({L"rev-parse", L"--verify", request.viewBranch.empty() ? L"HEAD" : request.viewBranch}, request.viewBranch.empty());
       std::wstring currentHead = headResult.exitCode ? L"" : trim(headResult.out);
       std::wstring historyHead = request.historyAppend ? request.historyHead : currentHead;
       snapshot.history.initialHead = historyHead;

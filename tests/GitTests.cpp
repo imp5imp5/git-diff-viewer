@@ -369,6 +369,64 @@ try
     check(escaped, "filter outside repository is rejected");
   }
   {
+    auto refDir = dir / L"ref-fixture";
+    fs::create_directory(refDir);
+    auto refGit = [&](std::vector<std::wstring> args) {
+      auto result = git.run(refDir.wstring(), args, cancel);
+      check(result.exitCode == 0, result.err.c_str());
+      return result.out;
+    };
+    refGit({L"init", L"-b", L"main"});
+    refGit({L"config", L"user.name", L"Ref Fixture"});
+    refGit({L"config", L"user.email", L"fixture@example.invalid"});
+    refGit({L"config", L"commit.gpgsign", L"false"});
+    refGit({L"config", L"core.hooksPath", L".no-hooks"});
+    std::ofstream(refDir / L"base.txt") << "base\n";
+    refGit({L"add", L"."});
+    refGit({L"commit", L"-m", L"base"});
+    refGit({L"checkout", L"-b", L"feature"});
+    std::ofstream(refDir / L"feature.txt") << "feature\n";
+    refGit({L"add", L"."});
+    refGit({L"commit", L"-m", L"feature"});
+    refGit({L"branch", L"--set-upstream-to=main"});
+    refGit({L"checkout", L"-b", L"alternate", L"main"});
+    std::ofstream(refDir / L"alternate.txt") << "alternate\n";
+    refGit({L"add", L"."});
+    refGit({L"commit", L"-m", L"alternate"});
+    refGit({L"branch", L"--set-upstream-to=feature"});
+    refGit({L"checkout", L"feature"});
+    auto refs = repo.listRefs(refDir.wstring(), cancel);
+    check(std::find(refs.begin(), refs.end(), L"main") != refs.end() &&
+            std::find(refs.begin(), refs.end(), L"feature") != refs.end() &&
+            std::find(refs.begin(), refs.end(), L"alternate") != refs.end(),
+      "branch picker lists local refs");
+    CompareRequest selected{refDir.wstring(), ChangeSource::History, {}, {}};
+    selected.viewBranch = L"alternate";
+    auto inherited = repo.load(selected, cancel);
+    check(inherited.upstream == L"feature", "selected branch uses its own configured upstream");
+    selected.viewUpstream = L"main";
+    auto history = repo.load(selected, cancel);
+    check(history.branch == L"alternate" && history.upstream == L"main" && history.history.outgoingCommits.size() == 1 &&
+            history.history.outgoingCommits[0].subject == L"alternate" && history.history.outgoing.files.size() == 1 &&
+            history.history.outgoing.files[0].path() == L"alternate.txt",
+      "selected branch replaces HEAD in History without checking out");
+    selected.source = ChangeSource::ReadyToPush;
+    auto readyView = repo.load(selected, cancel);
+    check(readyView.branch == L"alternate" && readyView.commits.size() == 1 && readyView.document.files.size() == 1 &&
+            readyView.document.files[0].path() == L"alternate.txt",
+      "selected branch replaces HEAD in Ready to push");
+    selected.viewUpstream = L"feature";
+    readyView = repo.load(selected, cancel);
+    check(readyView.upstream == L"feature" && readyView.base == L"feature" && readyView.commits.size() == 1,
+      "selected upstream supplies Ready to push base");
+    std::ofstream(refDir / L"feature.txt") << "modified worktree\n";
+    selected.source = ChangeSource::Unstaged;
+    auto working = repo.load(selected, cancel);
+    check(working.document.files.size() == 1 && working.document.files[0].path() == L"feature.txt",
+      "Unstaged remains attached to the real working tree after branch selection");
+    check(refGit({L"symbolic-ref", L"--short", L"HEAD"}) == "feature\n", "ref selection never checks out Git branches");
+  }
+  {
     auto unborn = dir / L"unborn";
     fs::create_directory(unborn);
     check(git.run(unborn.wstring(), {L"init", L"-b", L"main"}, cancel).exitCode == 0, "unborn init");

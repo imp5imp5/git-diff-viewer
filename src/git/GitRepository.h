@@ -31,6 +31,7 @@ struct CompareRequest
   std::wstring commitPrefix;
   bool commitLookup{};
   std::wstring branch;
+  std::wstring viewBranch, viewUpstream;
   size_t commitAncestorLimit{10};
   size_t commitDescendantLimit{5};
 };
@@ -63,5 +64,6 @@ public:
   RepositorySnapshot load(const CompareRequest &request, const std::atomic_bool &cancel) const;
   std::vector<Commit> findCommitsByPrefix(const std::wstring &directory, const std::wstring &prefix,
     const std::atomic_bool &cancel) const;
+  std::vector<std::wstring> listRefs(const std::wstring &directory, const std::atomic_bool &cancel) const;
 };
 } // namespace gdv

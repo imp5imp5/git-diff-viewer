@@ -120,6 +120,8 @@ Use the source dropdown to choose what to review:
 | **Commit range** | Direct comparison between the base and target refs. |
 | **History** | Working-tree sections, outgoing commits, and recent commits from `HEAD` in one list. |
 
+The **Branch** and **Upstream** values in the repository information line are clickable. Hover to underline a value, then click it to choose a local or remote branch from a searchable, themed dialog. **Branch** selects the ref used in **History** and as the target of **Ready to push**; **Upstream** selects the default base for **Ready to push**. Choose **Current HEAD (default)** or **Configured upstream (default)** to reset. These selections last for the current session and never run `git checkout` or change Git configuration. **Staged** and **Unstaged** still show the actual working tree.
+
 For **Ready to push**, leave the base field empty to use the configured upstream, or enter a branch/ref such as `main`. This mode uses locally available refs and does not fetch remote updates. If no upstream exists, enter a base explicitly. Its base value is stored separately from **Commit range**, so a range ref from another repository does not override the upstream default.
 
 For **Single commit**, enter a SHA or ref in **Target / commit**. For **Commit range**, fill in both comparison fields. Click **Compare** after editing the fields.

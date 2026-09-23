@@ -2,6 +2,8 @@
 #include "CommentEditor.h"
 #include "SearchDialog.h"
 #include "CommitPicker.h"
+#include "RefPicker.h"
+#include "diff/UnifiedDiffParser.h"
 #include "Screenshot.h"
 #include "Theme.h"
 #include <uxtheme.h>
@@ -67,6 +69,45 @@ std::wstring getText(HWND h)
   GetWindowTextW(h, s.data(), n + 1);
   s.resize(n);
   return s;
+}
+struct InfoLinks
+{
+  RECT branch{}, upstream{};
+};
+InfoLinks infoLinks(HWND window, HFONT font)
+{
+  InfoLinks links;
+  auto label = getText(window);
+  auto gapStart = label.find(L"     Upstream: ");
+  auto upstreamStart = gapStart == std::wstring::npos ? gapStart : gapStart + 5;
+  auto baseStart = label.find(L"     Base: ", upstreamStart);
+  if (label.rfind(L"Branch: ", 0) != 0 || upstreamStart == std::wstring::npos || baseStart == std::wstring::npos)
+    return links;
+  HDC dc = GetDC(window);
+  auto old = SelectObject(dc, font ? font : GetStockObject(DEFAULT_GUI_FONT));
+  auto width = [&](size_t start, size_t length) {
+    SIZE size{};
+    GetTextExtentPoint32W(dc, label.c_str() + start, static_cast<int>(length), &size);
+    return size.cx;
+  };
+  RECT client{};
+  GetClientRect(window, &client);
+  int branchEnd = width(0, gapStart);
+  int upstreamX = width(0, upstreamStart);
+  int upstreamEnd = width(0, baseStart);
+  links.branch = {0, 0, std::min<int>(client.right, branchEnd), client.bottom};
+  links.upstream = {std::min<int>(client.right, upstreamX), 0, std::min<int>(client.right, upstreamEnd), client.bottom};
+  SelectObject(dc, old);
+  ReleaseDC(window, dc);
+  return links;
+}
+int infoHit(const InfoLinks &links, POINT point)
+{
+  if (links.branch.right > links.branch.left && PtInRect(&links.branch, point))
+    return 1;
+  if (links.upstream.right > links.upstream.left && PtInRect(&links.upstream, point))
+    return 2;
+  return 0;
 }
 ChangeSource source(HWND h) { return static_cast<ChangeSource>(SendMessageW(h, CB_GETCURSEL, 0, 0)); }
 std::pair<size_t, size_t> changes(const FileDiff &file)
@@ -262,6 +303,8 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
   {
     CompareRequest request{directory_, source(source_), {}, {}, false};
     request.pathFilter = pathFilter_;
+    request.viewBranch = selectedBranchRef_;
+    request.viewUpstream = selectedUpstreamRef_;
     request.commitLookup = true;
     request.commitPrefix = hashPrefix;
     loading_ = true;
@@ -346,7 +389,8 @@ HWND MainWindow::control(const wchar_t *cls, const wchar_t *text, DWORD style, i
 void MainWindow::createControls()
 {
   refresh_ = control(L"BUTTON", L"Refresh", WS_TABSTOP, Refresh);
-  info_ = control(L"STATIC", L"No repository open", SS_ENDELLIPSIS | SS_CENTERIMAGE | SS_NOPREFIX, 0);
+  info_ = control(L"STATIC", L"No repository open", SS_ENDELLIPSIS | SS_CENTERIMAGE | SS_NOPREFIX | SS_NOTIFY, 0);
+  SetWindowSubclass(info_, infoProcedure, 1, reinterpret_cast<DWORD_PTR>(this));
   source_ = control(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL, Source);
   for (auto name : {L"Staged", L"Unstaged", L"All local · HEAD", L"Ready to push", L"Single commit", L"Commit range"})
     SendMessageW(source_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name));
@@ -519,7 +563,20 @@ void MainWindow::layout()
   move(commentsViewButton_, toolbarX, pad, row, row);
   toolbarX += scale(42);
   int y = pad + row + gap;
-  if (width < toolbarX + scale(220))
+  int infoNeeded = 0;
+  auto infoLabel = getText(info_);
+  auto baseStart = infoLabel.find(L"     Base: ");
+  if (baseStart != std::wstring::npos)
+  {
+    HDC dc = GetDC(info_);
+    auto oldFont = SelectObject(dc, font_ ? font_ : GetStockObject(DEFAULT_GUI_FONT));
+    SIZE size{};
+    GetTextExtentPoint32W(dc, infoLabel.c_str(), static_cast<int>(baseStart), &size);
+    infoNeeded = size.cx + scale(8);
+    SelectObject(dc, oldFont);
+    ReleaseDC(info_, dc);
+  }
+  if (width < toolbarX + scale(220) || width - toolbarX - pad < infoNeeded)
   {
     move(info_, pad, y, width - pad * 2, row);
     y += row + gap;
@@ -958,6 +1015,8 @@ void MainWindow::refresh(bool seriesSelection, bool keepCommitContext)
   }
   CompareRequest request{directory_, source(source_), getText(base_), getText(target_), false};
   request.pathFilter = pathFilter_;
+  request.viewBranch = selectedBranchRef_;
+  request.viewUpstream = selectedUpstreamRef_;
   if (request.source == ChangeSource::Commit)
   {
     if (!keepCommitContext)
@@ -995,6 +1054,8 @@ void MainWindow::loadMoreHistory()
   historyDiffTop_ = diff_.topRow();
   CompareRequest request{directory_, ChangeSource::History, {}, {}, false};
   request.pathFilter = pathFilter_;
+  request.viewBranch = selectedBranchRef_;
+  request.viewUpstream = selectedUpstreamRef_;
   request.historyLimit = 10;
   request.historySkip = snapshot_.history.nextSkip;
   request.historyHead = snapshot_.history.initialHead;
@@ -1130,7 +1191,9 @@ void MainWindow::loaded()
     selectedPath_.clear();
     selectedListKey_.clear();
     SendMessageW(files_, LB_RESETCONTENT, 0, 0);
-    SetWindowTextW(info_, directory_.c_str());
+    auto info = L"Branch: " + (selectedBranchRef_.empty() ? L"(current)" : selectedBranchRef_) + L"     Upstream: " +
+                (selectedUpstreamRef_.empty() ? L"(configured)" : selectedUpstreamRef_) + L"     Base: (unavailable)";
+    SetWindowTextW(info_, info.c_str());
     SetWindowTextW(status_, L"Git failed — see the diff pane for details.");
     if (initial)
       MessageBoxW(hwnd_,
@@ -1170,7 +1233,8 @@ void MainWindow::loaded()
   }
   else
     snapshot_ = std::move(result->snapshot);
-  scrollContext_ = snapshot_.root + L"\n" + std::to_wstring(static_cast<int>(result->request.source));
+  scrollContext_ = snapshot_.root + L"\n" + std::to_wstring(static_cast<int>(result->request.source)) + L"\n" +
+                   result->request.viewBranch + L"\n" + result->request.viewUpstream;
   if (result->request.source != ChangeSource::History)
     scrollContext_ += L"\n" + result->request.base + L"\n" + result->request.target;
   if (result->request.source == ChangeSource::Commit && !snapshot_.commitId.empty())
@@ -1203,9 +1267,8 @@ void MainWindow::loaded()
     }
   }
   auto repoName = std::filesystem::path(directory_).filename().wstring();
-  auto info = repoName + L"     Branch: " + snapshot_.branch + L"     Base: " + snapshot_.base;
-  if (!snapshot_.upstream.empty())
-    info += L"     Upstream: " + snapshot_.upstream;
+  auto info = L"Branch: " + snapshot_.branch + L"     Upstream: " + (snapshot_.upstream.empty() ? L"(none)" : snapshot_.upstream) +
+              L"     Base: " + snapshot_.base + L"     " + repoName;
   SetWindowTextW(info_, info.c_str());
   auto title = L"GitDiffViewer — " + directory_;
   if (!pathFilter_.empty())
@@ -1920,6 +1983,8 @@ void MainWindow::requestSelectedFullFile(const FileListItem &item)
     return;
   CompareRequest request{directory_, source(source_), getText(base_), getText(target_), true};
   request.pathFilter = pathFilter_;
+  request.viewBranch = selectedBranchRef_;
+  request.viewUpstream = selectedUpstreamRef_;
   request.path = item.file->path();
   request.selectionKey = item.key;
   request.selectedOnly = true;
@@ -2098,6 +2163,85 @@ LRESULT CALLBACK MainWindow::commitListProcedure(HWND hwnd, UINT msg, WPARAM w, 
     self->endPreview();
   else if (msg == WM_NCDESTROY)
     RemoveWindowSubclass(hwnd, commitListProcedure, id);
+  return DefSubclassProc(hwnd, msg, w, l);
+}
+LRESULT CALLBACK MainWindow::infoProcedure(HWND hwnd, UINT msg, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data)
+{
+  auto self = reinterpret_cast<MainWindow *>(data);
+  if (msg == WM_PAINT || msg == WM_PRINTCLIENT)
+  {
+    PAINTSTRUCT paint{};
+    HDC dc = msg == WM_PAINT ? BeginPaint(hwnd, &paint) : reinterpret_cast<HDC>(w);
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    FillRect(dc, &client, self->backgroundBrush_);
+    auto font = self->font_ ? self->font_ : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    auto old = SelectObject(dc, font);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, themeColor(ThemeColor::Text));
+    auto label = getText(hwnd);
+    DrawTextW(dc, label.c_str(), -1, &client, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    auto links = infoLinks(hwnd, font);
+    RECT link = self->infoHover_ == 1 ? links.branch : self->infoHover_ == 2 ? links.upstream : RECT{};
+    if (link.right > link.left)
+    {
+      TEXTMETRICW metric{};
+      GetTextMetricsW(dc, &metric);
+      int y = (client.bottom - metric.tmHeight) / 2 + metric.tmAscent + 1;
+      auto pen = CreatePen(PS_SOLID, 1, themeColor(ThemeColor::Text));
+      auto oldPen = SelectObject(dc, pen);
+      MoveToEx(dc, link.left, y, nullptr);
+      LineTo(dc, link.right, y);
+      SelectObject(dc, oldPen);
+      DeleteObject(pen);
+    }
+    SelectObject(dc, old);
+    if (msg == WM_PAINT)
+      EndPaint(hwnd, &paint);
+    return 0;
+  }
+  if (msg == WM_MOUSEMOVE)
+  {
+    TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
+    TrackMouseEvent(&tracking);
+    POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+    int hit = infoHit(infoLinks(hwnd, self->font_), point);
+    if (hit != self->infoHover_)
+    {
+      self->infoHover_ = hit;
+      InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    return 0;
+  }
+  if (msg == WM_MOUSELEAVE)
+  {
+    self->infoHover_ = 0;
+    InvalidateRect(hwnd, nullptr, FALSE);
+    return 0;
+  }
+  if (msg == WM_SETCURSOR)
+  {
+    POINT point{};
+    GetCursorPos(&point);
+    ScreenToClient(hwnd, &point);
+    if (infoHit(infoLinks(hwnd, self->font_), point))
+    {
+      SetCursor(LoadCursorW(nullptr, IDC_HAND));
+      return TRUE;
+    }
+  }
+  if (msg == WM_LBUTTONUP)
+  {
+    POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+    int hit = infoHit(infoLinks(hwnd, self->font_), point);
+    if (hit)
+    {
+      self->chooseDisplayedRef(hit == 2);
+      return 0;
+    }
+  }
+  if (msg == WM_NCDESTROY)
+    RemoveWindowSubclass(hwnd, infoProcedure, id);
   return DefSubclassProc(hwnd, msg, w, l);
 }
 LRESULT CALLBACK MainWindow::comboProcedure(HWND hwnd, UINT msg, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data)
@@ -2465,6 +2609,39 @@ void MainWindow::findNext(int direction)
     SetWindowTextW(status_, L"Text not found in current diff");
     MessageBoxW(hwnd_, L"No matches in the current diff.", L"Find in diff", MB_OK | MB_ICONINFORMATION);
   }
+}
+void MainWindow::chooseDisplayedRef(bool upstream)
+{
+  if (directory_.empty())
+    return;
+  std::vector<std::wstring> refs;
+  try
+  {
+    std::atomic_bool cancel{false};
+    refs = GitRepository{}.listRefs(directory_, cancel);
+  }
+  catch (const std::exception &error)
+  {
+    MessageBoxW(hwnd_, fromUtf8(error.what()).c_str(), L"Unable to list branches", MB_OK | MB_ICONERROR);
+    return;
+  }
+  auto selected = chooseRef(hwnd_, instance_, font_, upstream ? L"Choose upstream" : L"Choose branch",
+    upstream ? L"Configured upstream (default)" : L"Current HEAD (default)", upstream ? selectedUpstreamRef_ : selectedBranchRef_,
+    refs);
+  if (!selected)
+    return;
+  auto &value = upstream ? selectedUpstreamRef_ : selectedBranchRef_;
+  if (*selected == value)
+    return;
+  value = std::move(*selected);
+  if (upstream)
+  {
+    readyBase_.clear();
+    if (source(source_) == ChangeSource::ReadyToPush)
+      SetWindowTextW(base_, L"");
+  }
+  historyLimit_ = historyInitialLimit_;
+  refresh();
 }
 void MainWindow::saveSettings()
 {

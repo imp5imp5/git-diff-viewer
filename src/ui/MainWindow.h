@@ -71,6 +71,7 @@ private:
   void openCommentEditor();
   void copyComments();
   void showAbout();
+  void chooseDisplayedRef(bool upstream);
   void loadMoreHistory();
   void toggleCommentsView();
   void rebuildCommentsView();
@@ -102,6 +103,7 @@ private:
   void setExplorerLayout(bool enabled);
   void moveExplorerSplitter(int index, int position);
   void redrawExplorerPanels();
+  static LRESULT CALLBACK infoProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   static LRESULT CALLBACK comboProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   static LRESULT CALLBACK commitListProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   void screenshot();
@@ -133,7 +135,8 @@ private:
   HFONT font_{}, boldFont_{};
   UINT dpi_{96};
   std::wstring directory_, pathFilter_, selectedPath_, selectedListKey_;
-  std::wstring readyBase_, rangeBase_;
+  std::wstring readyBase_, rangeBase_, selectedBranchRef_, selectedUpstreamRef_;
+  int infoHover_{};
   ChangeSource baseMode_{ChangeSource::Unstaged};
   std::wstring commitBranch_, commitBranchCommit_;
   std::wstring scrollContext_;
