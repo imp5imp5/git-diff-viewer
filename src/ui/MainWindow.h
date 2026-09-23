@@ -105,6 +105,8 @@ private:
   static LRESULT CALLBACK comboProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   static LRESULT CALLBACK commitListProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   void screenshot();
+  void find();
+  void findNext(int direction);
   void saveSettings();
   void applyTheme();
   void startStatusAnimation();
@@ -112,9 +114,12 @@ private:
   std::wstring filePathAt(int index) const;
   static LRESULT CALLBACK filesProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   static LRESULT CALLBACK explorerListProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
-  HWND tooltip_{}, themeButton_{}, fullFileButton_{}, layoutButton_{}, copyCommentsButton_{}, commentsViewButton_{}, explorerCommits_{}, explorerMessage_{},
-    explorerFiles_{}, explorerBars_[3]{}, explorerCommitLabel_{}, explorerMessageLabel_{}, explorerFilesLabel_{};
+  HWND tooltip_{}, themeButton_{}, fullFileButton_{}, layoutButton_{}, copyCommentsButton_{}, commentsViewButton_{},
+    explorerCommits_{}, explorerMessage_{}, explorerFiles_{}, explorerBars_[3]{}, explorerCommitLabel_{}, explorerMessageLabel_{},
+    explorerFilesLabel_{};
   std::wstring tooltipText_, savedCommit_, infoTooltipText_;
+  std::vector<std::wstring> findHistory_;
+  std::wstring findText_;
   int tooltipIndex_{-1};
   HWND tooltipOwner_{};
   HBRUSH backgroundBrush_{}, fieldBrush_{};

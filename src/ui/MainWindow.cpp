@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "CommentEditor.h"
+#include "SearchDialog.h"
 #include "CommitPicker.h"
 #include "Screenshot.h"
 #include "Theme.h"
@@ -43,7 +44,10 @@ enum
   ExplorerFiles,
   CopyComments,
   CommentsView,
-  About
+  About,
+  Find,
+  FindNext,
+  FindPrevious
 };
 constexpr int minFilePaneWidth = 220;
 constexpr int minDiffPaneWidth = 300;
@@ -196,6 +200,13 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
   startHistory_ = startHistory;
   if (automationDirectory_.empty())
     settings_ = Settings::loadUser();
+  if (automationDirectory_.empty())
+    for (DWORD index = 0, count = std::min<DWORD>(settings_.number(L"FindHistoryCount", 0), 64); index < count; ++index)
+    {
+      auto entry = settings_.string((L"FindHistory" + std::to_wstring(index)).c_str());
+      if (!entry.empty())
+        findHistory_.push_back(std::move(entry));
+    }
   auto statsMode = settings_.string(L"FileStatsMode");
   if (statsMode == L"none")
     fileStatsMode_ = FileStatsMode::None;
@@ -258,10 +269,11 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
     refresh();
   if (!automationDirectory_.empty())
     SetTimer(hwnd_, automationTimer, 100, nullptr);
-  ACCEL entries[] = {{FVIRTKEY | FCONTROL, 'R', Refresh}, {FVIRTKEY, VK_F5, Refresh}, {FVIRTKEY | FCONTROL | FSHIFT, 'D', Toggle},
-    {FVIRTKEY | FCONTROL | FSHIFT, 'S', Screenshot}, {FVIRTKEY, VK_F2, CopyComments}, {FVIRTKEY | FCONTROL, VK_OEM_PLUS, ZoomIn},
-    {FVIRTKEY | FCONTROL, 'K', CommentsView}, {FVIRTKEY, VK_F1, About},
-    {FVIRTKEY | FCONTROL, VK_OEM_MINUS, ZoomOut}, {FVIRTKEY | FCONTROL | FSHIFT, VK_OEM_PLUS, ZoomIn},
+  ACCEL entries[] = {{FVIRTKEY | FCONTROL, 'F', Find}, {FVIRTKEY, VK_F7, Find}, {FVIRTKEY, VK_F3, FindNext},
+    {FVIRTKEY | FSHIFT, VK_F3, FindPrevious}, {FVIRTKEY | FSHIFT, VK_F7, FindNext}, {FVIRTKEY | FCONTROL, 'R', Refresh},
+    {FVIRTKEY, VK_F5, Refresh}, {FVIRTKEY | FCONTROL | FSHIFT, 'D', Toggle}, {FVIRTKEY | FCONTROL | FSHIFT, 'S', Screenshot},
+    {FVIRTKEY, VK_F2, CopyComments}, {FVIRTKEY | FCONTROL, VK_OEM_PLUS, ZoomIn}, {FVIRTKEY | FCONTROL, 'K', CommentsView},
+    {FVIRTKEY, VK_F1, About}, {FVIRTKEY | FCONTROL, VK_OEM_MINUS, ZoomOut}, {FVIRTKEY | FCONTROL | FSHIFT, VK_OEM_PLUS, ZoomIn},
     {FVIRTKEY | FCONTROL, VK_DOWN, NextFile}, {FVIRTKEY | FCONTROL, VK_UP, PreviousFile}, {FVIRTKEY | FCONTROL, VK_NEXT, NextChange},
     {FVIRTKEY | FCONTROL, VK_PRIOR, PreviousChange}, {FVIRTKEY | FCONTROL, VK_ADD, ZoomIn},
     {FVIRTKEY | FCONTROL, VK_SUBTRACT, ZoomOut}};
@@ -270,6 +282,12 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
   int result = 0;
   while ((result = GetMessageW(&msg, nullptr, 0, 0)) > 0)
   {
+    if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE && !findText_.empty())
+    {
+      diff_.clearSearch();
+      findText_.clear();
+      continue;
+    }
     if (msg.message == WM_KEYDOWN && msg.wParam == 'F' && !(msg.lParam & (1LL << 30)) && !(GetKeyState(VK_CONTROL) & 0x8000) &&
         !(GetKeyState(VK_MENU) & 0x8000))
     {
@@ -329,8 +347,10 @@ void MainWindow::createControls()
   for (auto name : {L"Staged", L"Unstaged", L"All local · HEAD", L"Ready to push", L"Single commit", L"Commit range"})
     SendMessageW(source_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name));
   SendMessageW(source_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"History"));
-  SendMessageW(source_, CB_SETCURSEL, startHistory_ ? static_cast<WPARAM>(ChangeSource::History)
-                                                     : automationDirectory_.empty() ? std::min<DWORD>(6, settings_.number(L"Source", 1)) : 1,
+  SendMessageW(source_, CB_SETCURSEL,
+    startHistory_                  ? static_cast<WPARAM>(ChangeSource::History)
+    : automationDirectory_.empty() ? std::min<DWORD>(6, settings_.number(L"Source", 1))
+                                   : 1,
     0);
   view_ = control(L"BUTTON", L"Side-by-side", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE, View);
   SendMessageW(view_, BM_SETCHECK, side_ ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -2400,6 +2420,42 @@ void MainWindow::stopStatusAnimation()
   InvalidateRect(status_, nullptr, FALSE);
 }
 
+void MainWindow::find()
+{
+  auto result = findDiffText(hwnd_, instance_, findText_, findHistory_);
+  if (!result.accepted)
+    return;
+  findText_ = std::move(result.text);
+  if (findText_.empty())
+  {
+    diff_.setSearchText(L"");
+    return;
+  }
+  findHistory_.erase(std::remove(findHistory_.begin(), findHistory_.end(), findText_), findHistory_.end());
+  findHistory_.insert(findHistory_.begin(), findText_);
+  if (findHistory_.size() > 64)
+    findHistory_.resize(64);
+  diff_.setSearchText(findText_);
+  findNext(1);
+}
+void MainWindow::findNext(int direction)
+{
+  if (findText_.empty())
+  {
+    find();
+    return;
+  }
+  if (diff_.findNext(direction))
+  {
+    SetFocus(diff_.handle());
+    SetWindowTextW(status_, (L"Found " + std::to_wstring(diff_.searchResultCount()) + L" matching lines").c_str());
+  }
+  else
+  {
+    SetWindowTextW(status_, L"Text not found in current diff");
+    MessageBoxW(hwnd_, L"No matches in the current diff.", L"Find in diff", MB_OK | MB_ICONINFORMATION);
+  }
+}
 void MainWindow::saveSettings()
 {
   if (!automationDirectory_.empty())
@@ -2414,6 +2470,9 @@ void MainWindow::saveSettings()
   settings_.setNumber(L"ExplorerMessageWidth", static_cast<DWORD>(explorerMessageWidth_));
   settings_.setNumber(L"ExplorerTopHeight", static_cast<DWORD>(explorerTopHeight_));
   settings_.setNumber(L"HistoryCommitCount", static_cast<DWORD>(historyInitialLimit_));
+  settings_.setNumber(L"FindHistoryCount", static_cast<DWORD>(findHistory_.size()));
+  for (size_t index = 0; index < findHistory_.size(); ++index)
+    settings_.setString((L"FindHistory" + std::to_wstring(index)).c_str(), findHistory_[index]);
   const wchar_t *statsModes[] = {L"none", L"bars", L"numbers", L"auto"};
   settings_.setString(L"FileStatsMode", statsModes[static_cast<size_t>(fileStatsMode_)]);
   if (source(source_) == ChangeSource::ReadyToPush)
@@ -2912,7 +2971,7 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
         if (draw->dwDrawStage == CDDS_PREPAINT)
         {
           bool checked = (hdr->hwndFrom == view_ || hdr->hwndFrom == fullFileButton_ || hdr->hwndFrom == layoutButton_ ||
-                          hdr->hwndFrom == commentsViewButton_) &&
+                           hdr->hwndFrom == commentsViewButton_) &&
                          SendMessageW(hdr->hwndFrom, BM_GETCHECK, 0, 0) == BST_CHECKED;
           auto buttonBrush = checked ? CreateSolidBrush(themeColor(ThemeColor::ListSelection)) : fieldBrush_;
           FillRect(draw->hdc, &draw->rc, buttonBrush);
@@ -3087,6 +3146,7 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
     }
     case repositoryReady: loaded(); return 0;
     case WM_APP + 2: openCommentEditor(); return 0;
+    case WM_APP + 3: findText_.clear(); return 0;
     case WM_COMMAND:
       switch (LOWORD(w))
       {
@@ -3147,6 +3207,9 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
           break;
         case Toggle: toggle(); break;
         case Screenshot: screenshot(); break;
+        case Find: find(); break;
+        case FindNext: findNext(1); break;
+        case FindPrevious: findNext(-1); break;
         case ZoomIn: diff_.zoom(1); break;
         case NextFile: navigateList(1); break;
         case PreviousFile: navigateList(-1); break;

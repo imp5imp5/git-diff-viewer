@@ -30,6 +30,7 @@ enum class ThemeColor
   Comment,
   CommentText,
   CommentIndicator,
+  SearchIndicator,
   Count
 };
 inline constexpr std::array<COLORREF, static_cast<size_t>(ThemeColor::Count)> lightPalette{{
@@ -57,6 +58,7 @@ inline constexpr std::array<COLORREF, static_cast<size_t>(ThemeColor::Count)> li
   RGB(255, 248, 209), // Comment
   RGB(65, 52, 15),    // CommentText
   RGB(234, 178, 22),  // CommentIndicator
+  RGB(160, 40, 210),  // SearchIndicator
 }};
 inline constexpr std::array<COLORREF, static_cast<size_t>(ThemeColor::Count)> darkPalette{{
   RGB(36, 40, 47),    // Window
@@ -83,6 +85,7 @@ inline constexpr std::array<COLORREF, static_cast<size_t>(ThemeColor::Count)> da
   RGB(75, 67, 35),    // Comment
   RGB(255, 238, 180), // CommentText
   RGB(245, 195, 55),  // CommentIndicator
+  RGB(245, 110, 255), // SearchIndicator
 }};
 inline COLORREF themeColor(ThemeColor role) { return (darkTheme ? darkPalette : lightPalette)[static_cast<size_t>(role)]; }
 inline COLORREF pathTextColor(bool selected)

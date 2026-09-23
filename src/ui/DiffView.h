@@ -30,6 +30,10 @@ public:
   void navigateChange(int direction);
   void showFirstChange();
   void setChangeMinimap(bool enabled);
+  void setSearchText(std::wstring text);
+  void clearSearch();
+  bool findNext(int direction = 1);
+  int searchResultCount() const { return static_cast<int>(searchRows_.size()); }
   int minimapMarkerCount() const { return minimap_ ? static_cast<int>(changeBlocks_.size()) : 0; }
   bool scrollbarHovered() const { return scrollbarHover_; }
   bool scrollbarDragging() const { return scrollbarDragging_; }
@@ -46,6 +50,9 @@ private:
   void scrollTo(int row);
   void showChangeBlock(size_t index, bool flash);
   void stopChangeFlash();
+  void rebuildSearch();
+  void ensureSearchVisible(int row);
+  void stopSearchFlash();
   void drawVerticalScrollbar(HDC dc, const RECT &area) const;
   void dragVerticalScrollbar(int y);
   int scrollbarWidth() const;
@@ -64,11 +71,15 @@ private:
   const FileDiff *file_{};
   std::vector<PresentationRow> rows_;
   std::vector<ChangeBlock> changeBlocks_, navigationBlocks_;
+  std::vector<int> searchRows_;
   std::vector<ReviewComment> comments_;
   std::wstring message_{L"Open a Git repository to review its local changes."};
   bool side_{}, dragging_{}, plain_{}, minimap_{}, scrollbarDragging_{}, scrollbarHover_{}, selectedAfter_{true};
   int scrollbarDragOffset_{};
   int activeChange_{-1}, flashFirst_{-1}, flashLast_{-1};
+  int activeSearch_{-1};
+  bool searchFlashing_{};
+  std::wstring searchText_;
   int top_{}, horizontal_{}, selected_{-1}, anchor_{-1}, rowHeight_{22}, charWidth_{8}, headerHeight_{62}, maxWidth_{}, wheel_{},
     zoomWheel_{}, numberDigits_{7}, fontPoints_{11};
   UINT dpi_{96};

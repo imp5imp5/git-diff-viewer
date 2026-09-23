@@ -10,6 +10,34 @@ namespace
 {
 constexpr UINT_PTR autoScrollTimer = 2;
 constexpr UINT_PTR changeFlashTimer = 3;
+constexpr UINT_PTR searchFlashTimer = 4;
+std::wstring foldSearchText(std::wstring_view value)
+{
+  std::wstring folded(value);
+  std::transform(folded.begin(), folded.end(), folded.begin(), [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
+  return folded;
+}
+std::wstring expandedLineText(std::wstring_view value)
+{
+  std::wstring expanded;
+  expanded.reserve(value.size());
+  size_t column = 0;
+  for (wchar_t c : value)
+  {
+    if (c == L'\t')
+    {
+      size_t count = 4 - column % 4;
+      expanded.append(count, L' ');
+      column += count;
+    }
+    else
+    {
+      expanded += c == L'\r' ? L'↵' : c;
+      ++column;
+    }
+  }
+  return expanded;
+}
 void fill(HDC dc, RECT r, ThemeColor color)
 {
   HBRUSH b = CreateSolidBrush(themeColor(color));
@@ -83,6 +111,7 @@ void DiffView::setFile(const FileDiff *file, bool preserve, bool plainText)
 {
   stopAutoScroll();
   stopChangeFlash();
+  stopSearchFlash();
   plain_ = plainText;
   headerHeight_ = plain_ ? 0 : std::max(MulDiv(62, static_cast<int>(dpi_), 96), rowHeight_ * 2);
   const FileDiff *previousFile = file_;
@@ -90,6 +119,7 @@ void DiffView::setFile(const FileDiff *file, bool preserve, bool plainText)
   auto previousRows = rows_;
   rows_ = file ? buildPresentation(*file, side_) : std::vector<PresentationRow>{};
   decorateRows();
+  rebuildSearch();
   if (preserve && previousFile == file && previousRows.size() != rows_.size() && !previousRows.empty() && !rows_.empty())
   {
     top_ = static_cast<int>(correspondingRow(previousRows, static_cast<size_t>(top_), rows_));
@@ -154,6 +184,7 @@ void DiffView::setSideBySide(bool enabled)
   auto previousRows = rows_;
   rows_ = file_ ? buildPresentation(*file_, side_) : std::vector<PresentationRow>{};
   decorateRows();
+  rebuildSearch();
   top_ = static_cast<int>(correspondingRow(previousRows, static_cast<size_t>(top_), rows_));
   if (selected_ >= 0)
     selected_ = static_cast<int>(correspondingRow(previousRows, static_cast<size_t>(selected_), rows_));
@@ -237,6 +268,144 @@ void DiffView::setComments(std::vector<ReviewComment> comments)
   comments_ = std::move(comments);
   activeChange_ = -1;
   setFile(file_, true, plain_);
+}
+void DiffView::setSearchText(std::wstring text)
+{
+  searchText_ = std::move(text);
+  rebuildSearch();
+  InvalidateRect(hwnd_, nullptr, FALSE);
+}
+void DiffView::clearSearch()
+{
+  if (searchText_.empty())
+    return;
+  stopSearchFlash();
+  searchText_.clear();
+  searchRows_.clear();
+  activeSearch_ = -1;
+  InvalidateRect(hwnd_, nullptr, FALSE);
+}
+void DiffView::stopSearchFlash()
+{
+  if (hwnd_)
+    KillTimer(hwnd_, searchFlashTimer);
+  searchFlashing_ = false;
+}
+void DiffView::rebuildSearch()
+{
+  stopSearchFlash();
+  searchRows_.clear();
+  activeSearch_ = -1;
+  if (searchText_.empty())
+    return;
+  auto needle = foldSearchText(searchText_);
+  auto matches = [&](std::wstring_view value) { return foldSearchText(value).find(needle) != std::wstring::npos; };
+  for (size_t index = 0; index < rows_.size(); ++index)
+  {
+    const auto &row = rows_[index];
+    bool found = false;
+    if (row.comment != noLine)
+      found = matches(row.commentText);
+    else if (!row.meta.empty())
+      found = matches(row.meta);
+    else if (side_)
+    {
+      for (size_t lineIndex : {row.left, row.right})
+        if (const auto *value = line(row, lineIndex))
+          found |= matches(expandedLineText(value->text));
+    }
+    else if (const auto *value = line(row, row.left != noLine ? row.left : row.right))
+      found = matches(expandedLineText(value->text));
+    if (found)
+      searchRows_.push_back(static_cast<int>(index));
+  }
+}
+void DiffView::ensureSearchVisible(int index)
+{
+  if (index < 0 || index >= static_cast<int>(rows_.size()) || searchText_.empty())
+    return;
+  RECT area{};
+  GetClientRect(hwnd_, &area);
+  int contentRight = std::max(1, static_cast<int>(area.right) - scrollbarWidth());
+  int half = contentRight / 2;
+  int gutter = (side_ ? numberDigits_ + 2 : numberDigits_ * 2 + 3) * charWidth_;
+  std::wstring needle = foldSearchText(searchText_);
+  std::optional<int> desired;
+  int bestTravel = INT_MAX;
+  bool alreadyVisible = false;
+  auto consider = [&](std::wstring_view text, int origin, int right) {
+    if (alreadyVisible || right <= origin)
+      return;
+    size_t found = foldSearchText(text).find(needle);
+    if (found == std::wstring::npos)
+      return;
+    size_t maxColumn = static_cast<size_t>(INT_MAX / std::max(1, charWidth_) / 2);
+    int matchLeft = static_cast<int>(std::min(found, maxColumn)) * charWidth_;
+    int matchRight = static_cast<int>(std::min(found + searchText_.size(), maxColumn)) * charWidth_;
+    int width = right - origin;
+    int margin = std::min(charWidth_, width / 8);
+    if (matchLeft >= horizontal_ + margin && matchRight <= horizontal_ + width - margin)
+    {
+      alreadyVisible = true;
+      return;
+    }
+    int next = horizontal_;
+    if (matchRight - matchLeft > width - 2 * margin || matchLeft < horizontal_ + margin)
+      next = std::max(0, matchLeft - margin);
+    else
+      next = std::max(0, matchRight - width + margin);
+    int travel = std::abs(next - horizontal_);
+    if (travel < bestTravel)
+    {
+      bestTravel = travel;
+      desired = next;
+    }
+  };
+  const auto &row = rows_[static_cast<size_t>(index)];
+  if (row.comment != noLine)
+    consider(row.commentText, (side_ ? half : 0) + gutter + charWidth_, contentRight);
+  else if (!row.meta.empty())
+    consider(row.meta, MulDiv(14, static_cast<int>(dpi_), 96), contentRight);
+  else if (side_)
+  {
+    if (const auto *before = line(row, row.left))
+      consider(expandedLineText(before->text), gutter, half);
+    if (const auto *after = line(row, row.right))
+      consider(expandedLineText(after->text), half + gutter, contentRight);
+  }
+  else if (const auto *value = line(row, row.left != noLine ? row.left : row.right))
+    consider(expandedLineText(value->text), gutter, contentRight);
+  if (!alreadyVisible && desired)
+    horizontal_ = *desired;
+}
+bool DiffView::findNext(int direction)
+{
+  if (searchRows_.empty() || !direction)
+    return false;
+  int target = -1;
+  if (activeSearch_ >= 0)
+    target = (activeSearch_ + (direction < 0 ? -1 : 1) + static_cast<int>(searchRows_.size())) % static_cast<int>(searchRows_.size());
+  else if (direction > 0)
+  {
+    target = 0;
+    while (target + 1 < static_cast<int>(searchRows_.size()) && searchRows_[static_cast<size_t>(target)] < top_)
+      ++target;
+  }
+  else
+  {
+    target = static_cast<int>(searchRows_.size()) - 1;
+    while (target > 0 && searchRows_[static_cast<size_t>(target)] > top_)
+      --target;
+  }
+  activeSearch_ = target;
+  top_ = searchRows_[static_cast<size_t>(target)] - pageRows() / 2;
+  ensureSearchVisible(searchRows_[static_cast<size_t>(target)]);
+  updateScroll();
+  stopSearchFlash();
+  searchFlashing_ = SetTimer(hwnd_, searchFlashTimer, 100, nullptr) != 0;
+  InvalidateRect(hwnd_, nullptr, FALSE);
+  UpdateWindow(hwnd_);
+  return true;
 }
 std::optional<std::pair<int, int>> DiffView::selectedNewLines() const
 {
@@ -432,7 +601,7 @@ void DiffView::drawVerticalScrollbar(HDC dc, const RECT &area) const
       mix(GetBValue(thumbColor), GetBValue(target)));
   }
   fillColor(dc, thumb, thumbColor);
-  if (!minimap_ || changeBlocks_.empty() || rows_.empty())
+  if (!minimap_ || (changeBlocks_.empty() && searchRows_.empty()) || rows_.empty())
     return;
   RECT track = bar;
   InflateRect(&track, -MulDiv(2, static_cast<int>(dpi_), 96), -MulDiv(2, static_cast<int>(dpi_), 96));
@@ -467,6 +636,13 @@ void DiffView::drawVerticalScrollbar(HDC dc, const RECT &area) const
     }
     else
       fill(dc, marker, block.removed ? ThemeColor::RemovedIndicator : ThemeColor::AddedIndicator);
+  }
+  for (int row : searchRows_)
+  {
+    int first = track.top + MulDiv(row, height, count);
+    int last = std::min(static_cast<int>(track.bottom), first + std::max(2, thickness));
+    // Search results share the diff overview track, but span the whole scrollbar for contrast with change markers.
+    fill(dc, {bar.left, first, bar.right, last}, ThemeColor::SearchIndicator);
   }
 }
 const DiffLine *DiffView::line(const PresentationRow &row, size_t index) const
@@ -519,7 +695,31 @@ void DiffView::paint(HDC printDC)
     RECT empty{pad * 2, headerHeight_ + pad * 2, contentRight - pad * 2, area.bottom - pad};
     text(dc, empty, message_, ThemeColor::MutedText, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
   }
-  auto drawCell = [&](RECT r, const DiffLine *l, bool oldSide, bool unified, bool selected, bool flashing, bool marked) {
+  auto drawSearchBox = [&](RECT content, RECT clip, const std::wstring &value, bool active) {
+    if (!active || searchText_.empty())
+      return;
+    size_t found = foldSearchText(value).find(foldSearchText(searchText_));
+    if (found == std::wstring::npos)
+      return;
+    int saved = SaveDC(dc);
+    IntersectClipRect(dc, clip.left, clip.top, clip.right, clip.bottom);
+    RECT match{content.left + static_cast<int>(found) * charWidth_, content.top,
+      content.left + static_cast<int>(found + searchText_.size()) * charWidth_, content.bottom};
+    if (searchFlashing_)
+    {
+      fillColor(dc, match, darkTheme ? RGB(255, 255, 255) : RGB(0, 0, 0));
+      SetTextColor(dc, darkTheme ? RGB(0, 0, 0) : RGB(255, 255, 255));
+      auto matchedText = value.substr(found, searchText_.size());
+      DrawTextW(dc, matchedText.c_str(), static_cast<int>(matchedText.size()), &match,
+        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+    }
+    HBRUSH outline = CreateSolidBrush(themeColor(ThemeColor::Text));
+    FrameRect(dc, &match, outline);
+    DeleteObject(outline);
+    RestoreDC(dc, saved);
+  };
+  auto drawCell = [&](RECT r, const DiffLine *l, bool oldSide, bool unified, bool selected, bool flashing, bool marked,
+                    bool searchActive) {
     auto color = themeColor(selected ? ThemeColor::Selection : background(l));
     fillColor(dc, r, flashing ? flashColor(color) : color);
     if (!l)
@@ -547,26 +747,11 @@ void DiffView::paint(HDC printDC)
     content.left += gutter;
     int saved = SaveDC(dc);
     IntersectClipRect(dc, content.left, content.top, content.right, content.bottom);
-    std::wstring expanded;
-    expanded.reserve(l->text.size());
-    size_t column = 0;
-    for (auto c : l->text)
-    {
-      if (c == L'\t')
-      {
-        size_t n = 4 - column % 4;
-        expanded.append(n, L' ');
-        column += n;
-      }
-      else
-      {
-        expanded += c == L'\r' ? L'↵' : c;
-        ++column;
-      }
-    }
+    auto expanded = expandedLineText(l->text);
     content.left -= horizontal_;
     content.right = std::max(content.right, content.left + maxWidth_ + charWidth_);
     text(dc, content, expanded, ThemeColor::DiffText);
+    drawSearchBox(content, {content.left + horizontal_, content.top, r.right, content.bottom}, expanded, searchActive);
     RestoreDC(dc, saved);
   };
   int visible = (area.bottom - headerHeight_ + rowHeight_ - 1) / rowHeight_;
@@ -576,6 +761,7 @@ void DiffView::paint(HDC printDC)
     const auto &row = rows_[index];
     RECT r{0, headerHeight_ + n * rowHeight_, contentRight, headerHeight_ + (n + 1) * rowHeight_};
     bool selected = anchor_ >= 0 && selected_ >= 0 && index >= std::min(anchor_, selected_) && index <= std::max(anchor_, selected_);
+    bool activeSearch = activeSearch_ >= 0 && searchRows_[static_cast<size_t>(activeSearch_)] == index;
     bool flashing = index >= flashFirst_ && index <= flashLast_;
     if (row.comment != noLine)
     {
@@ -584,28 +770,33 @@ void DiffView::paint(HDC printDC)
       int boundary = (side_ ? half : 0) + gutter;
       fill(dc, {boundary - std::max(4, MulDiv(5, static_cast<int>(dpi_), 96)), r.top, boundary, r.bottom},
         ThemeColor::CommentIndicator);
+      RECT clip = r;
+      clip.left = boundary + charWidth_;
       r.left = boundary + charWidth_ - horizontal_;
       text(dc, r, row.commentText, ThemeColor::CommentText);
+      drawSearchBox(r, clip, row.commentText, activeSearch);
     }
     else if (!row.meta.empty())
     {
       auto color = themeColor(selected ? ThemeColor::Selection : plain_ ? ThemeColor::Surface : ThemeColor::Metadata);
       fillColor(dc, r, flashing ? flashColor(color) : color);
+      RECT clip = r;
       r.left += pad - horizontal_;
       text(dc, r, row.meta, plain_ ? ThemeColor::Text : ThemeColor::MetadataText);
+      drawSearchBox(r, clip, row.meta, activeSearch);
     }
     else if (side_)
     {
       auto left = r;
       left.right = half;
-      drawCell(left, line(row, row.left), true, false, selected, flashing, false);
+      drawCell(left, line(row, row.left), true, false, selected, flashing, false, activeSearch);
       auto right = r;
       right.left = half;
       const DiffLine *after = line(row, row.right);
       bool marked = after && after->newLine && std::any_of(comments_.begin(), comments_.end(), [&](const ReviewComment &comment) {
         return *after->newLine >= comment.firstLine && *after->newLine <= comment.lastLine;
       });
-      drawCell(right, after, false, false, selected, flashing, marked);
+      drawCell(right, after, false, false, selected, flashing, marked, activeSearch);
     }
     else
     {
@@ -613,7 +804,7 @@ void DiffView::paint(HDC printDC)
       bool marked = value && value->newLine && std::any_of(comments_.begin(), comments_.end(), [&](const ReviewComment &comment) {
         return *value->newLine >= comment.firstLine && *value->newLine <= comment.lastLine;
       });
-      drawCell(r, value, false, true, selected, flashing, marked);
+      drawCell(r, value, false, true, selected, flashing, marked, activeSearch);
     }
   }
   if (side_ && !plain_)
@@ -749,6 +940,7 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
     }
     case WM_MBUTTONDOWN:
     {
+
       if (autoScroll_)
       {
         stopAutoScroll();
@@ -772,6 +964,12 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
     }
     case WM_MBUTTONUP: return 0;
     case WM_TIMER:
+      if (w == searchFlashTimer && searchFlashing_)
+      {
+        stopSearchFlash();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+      }
       if (w == changeFlashTimer && changeFlashing())
       {
         stopChangeFlash();
@@ -799,6 +997,7 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
       }
       return 0;
     case WM_SETCURSOR:
+
       if (autoScroll_)
       {
         SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
@@ -823,6 +1022,7 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
       stopAutoScroll();
       break;
     case WM_RBUTTONDOWN:
+
       if (autoScroll_)
       {
         stopAutoScroll();
@@ -864,6 +1064,7 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
     }
     case WM_LBUTTONDOWN:
     {
+
       if (autoScroll_)
       {
         stopAutoScroll();
@@ -955,6 +1156,13 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
       return 0;
     case WM_KEYDOWN:
     {
+      if (w == VK_ESCAPE && !searchText_.empty())
+      {
+        clearSearch();
+        SendMessageW(GetParent(hwnd_), WM_APP + 3, 0, 0);
+        return 0;
+      }
+
       if (autoScroll_)
       {
         stopAutoScroll();
