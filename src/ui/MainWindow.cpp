@@ -192,10 +192,13 @@ MainWindow::~MainWindow()
     DeleteObject(fieldBrush_);
 }
 int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::wstring automationDirectory, std::wstring hashPrefix,
-  bool startHistory)
+  bool startHistory, std::wstring pathFilter)
 {
   instance_ = instance;
   directory_ = std::move(directory);
+  pathFilter_ = std::move(pathFilter);
+  if (!pathFilter_.empty())
+    pathFilter_ = std::filesystem::absolute(std::filesystem::path(directory_) / pathFilter_).lexically_normal().wstring();
   automationDirectory_ = std::move(automationDirectory);
   startHistory_ = startHistory;
   if (automationDirectory_.empty())
@@ -258,6 +261,7 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
   if (!hashPrefix.empty())
   {
     CompareRequest request{directory_, source(source_), {}, {}, false};
+    request.pathFilter = pathFilter_;
     request.commitLookup = true;
     request.commitPrefix = hashPrefix;
     loading_ = true;
@@ -953,6 +957,7 @@ void MainWindow::refresh(bool seriesSelection, bool keepCommitContext)
     return;
   }
   CompareRequest request{directory_, source(source_), getText(base_), getText(target_), false};
+  request.pathFilter = pathFilter_;
   if (request.source == ChangeSource::Commit)
   {
     if (!keepCommitContext)
@@ -989,6 +994,7 @@ void MainWindow::loadMoreHistory()
   historyExplorerTop_ = static_cast<int>(SendMessageW(explorerCommits_, LB_GETTOPINDEX, 0, 0));
   historyDiffTop_ = diff_.topRow();
   CompareRequest request{directory_, ChangeSource::History, {}, {}, false};
+  request.pathFilter = pathFilter_;
   request.historyLimit = 10;
   request.historySkip = snapshot_.history.nextSkip;
   request.historyHead = snapshot_.history.initialHead;
@@ -1201,7 +1207,10 @@ void MainWindow::loaded()
   if (!snapshot_.upstream.empty())
     info += L"     Upstream: " + snapshot_.upstream;
   SetWindowTextW(info_, info.c_str());
-  SetWindowTextW(hwnd_, (L"GitDiffViewer — " + directory_).c_str());
+  auto title = L"GitDiffViewer — " + directory_;
+  if (!pathFilter_.empty())
+    title += L" [" + std::filesystem::path(pathFilter_).lexically_relative(snapshot_.root).generic_wstring() + L"]";
+  SetWindowTextW(hwnd_, title.c_str());
   SendMessageW(files_, WM_SETREDRAW, FALSE, 0);
   tooltipIndex_ = -1;
   SendMessageW(tooltip_, TTM_POP, 0, 0);
@@ -1910,6 +1919,7 @@ void MainWindow::requestSelectedFullFile(const FileListItem &item)
   if (!item.file || item.key.empty())
     return;
   CompareRequest request{directory_, source(source_), getText(base_), getText(target_), true};
+  request.pathFilter = pathFilter_;
   request.path = item.file->path();
   request.selectionKey = item.key;
   request.selectedOnly = true;

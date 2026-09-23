@@ -2,6 +2,7 @@
 #include "diff/UnifiedDiffParser.h"
 #include <algorithm>
 #include <cwctype>
+#include <filesystem>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_set>
@@ -73,7 +74,8 @@ std::vector<Commit> GitRepository::findCommitsByPrefix(const std::wstring &direc
       throw std::runtime_error("Cancelled");
     if (commit.exitCode)
       continue;
-    auto refs = git.run(directory, {L"for-each-ref", L"--contains=" + id, L"--format=%(refname:short)", L"refs/heads", L"refs/remotes"}, cancel);
+    auto refs =
+      git.run(directory, {L"for-each-ref", L"--contains=" + id, L"--format=%(refname:short)", L"refs/heads", L"refs/remotes"}, cancel);
     if (refs.cancelled || cancel)
       throw std::runtime_error("Cancelled");
     if (refs.exitCode)
@@ -129,6 +131,19 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
   };
   snapshot.root = trim(run({L"rev-parse", L"--show-toplevel"}).out);
   cwd = snapshot.root;
+  std::wstring pathspec;
+  if (!request.pathFilter.empty())
+  {
+    namespace fs = std::filesystem;
+    auto root = fs::path(snapshot.root).lexically_normal();
+    auto input = fs::path(request.pathFilter);
+    auto absolute = (input.is_absolute() ? input : fs::path(request.directory) / input).lexically_normal();
+    auto relative = absolute.lexically_relative(root);
+    if (relative.empty() || *relative.begin() == L"..")
+      throw std::invalid_argument("The filter path must be inside the repository.");
+    if (relative != L".")
+      pathspec = L":(top,literal)" + relative.generic_wstring();
+  }
   snapshot.branch = trim(run({L"symbolic-ref", L"--quiet", L"--short", L"HEAD"}, true).out);
   if (snapshot.branch.empty())
     snapshot.branch = L"Detached HEAD";
@@ -138,20 +153,23 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
       throw std::runtime_error("Enter a commit or branch in the comparison fields, then click Compare.");
     return trim(run({L"rev-parse", L"--verify", L"--end-of-options", ref + L"^{commit}"}).out);
   };
-  auto commits = [&](const std::wstring &range, bool reverse = false, size_t skip = 0, size_t limit = 0, bool firstParent = false, bool ancestryPath = false) {
+  auto commits = [&](const std::wstring &range, bool reverse = false, size_t skip = 0, size_t limit = 0, bool firstParent = false,
+                   bool ancestryPath = false) {
     std::vector<std::wstring> logArgs = {
       L"log", L"--encoding=UTF-8", L"--format=%H%x00%s%x00%an%x00%H%nAuthor: %an <%ae>%nDate: %aI%n%n%B%x00"};
     if (reverse)
       logArgs.push_back(L"--reverse");
     if (firstParent)
-    if (ancestryPath)
-      logArgs.push_back(L"--ancestry-path");
-      logArgs.push_back(L"--first-parent");
+      if (ancestryPath)
+        logArgs.push_back(L"--ancestry-path");
+    logArgs.push_back(L"--first-parent");
     if (skip)
       logArgs.push_back(L"--skip=" + std::to_wstring(skip));
     if (limit)
       logArgs.push_back(L"-n" + std::to_wstring(limit));
     logArgs.insert(logArgs.end(), {range, L"--"});
+    if (!pathspec.empty())
+      logArgs.push_back(pathspec);
     return parseCommits(run(logArgs).out);
   };
   std::vector<std::wstring> args = {L"diff", L"--no-color", L"--no-ext-diff", L"--no-textconv", L"--no-relative", L"--src-prefix=a/",
@@ -165,6 +183,8 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
       auto commitArgs = args;
       commitArgs[0] = L"show";
       commitArgs.insert(commitArgs.end(), {L"--format=", L"--root", L"--first-parent", commit.id, L"--"});
+      if (!pathspec.empty())
+        commitArgs.push_back(pathspec);
       snapshot.commitDocuments.push_back(UnifiedDiffParser{}.parse(run(commitArgs).out));
     }
   };
@@ -172,6 +192,8 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
     auto commitArgs = args;
     commitArgs[0] = L"show";
     commitArgs.insert(commitArgs.end(), {L"--format=", L"--root", L"--first-parent", commit.id, L"--"});
+    if (!pathspec.empty())
+      commitArgs.push_back(pathspec);
     return UnifiedDiffParser{}.parse(run(commitArgs).out);
   };
   auto diffDocument = [&](bool staged) {
@@ -179,6 +201,8 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
     if (staged)
       diffArgs.push_back(L"--cached");
     diffArgs.push_back(L"--");
+    if (!pathspec.empty())
+      diffArgs.push_back(pathspec);
     return UnifiedDiffParser{}.parse(run(diffArgs).out);
   };
   switch (request.source)
@@ -286,6 +310,8 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
           auto outgoingArgs = args;
           outgoingArgs.push_back(upstream + L"..." + currentHead);
           outgoingArgs.push_back(L"--");
+          if (!pathspec.empty())
+            outgoingArgs.push_back(pathspec);
           snapshot.history.outgoing = UnifiedDiffParser{}.parse(run(outgoingArgs).out);
           snapshot.history.outgoingDocuments.reserve(snapshot.history.outgoingCommits.size());
           for (const auto &commit : snapshot.history.outgoingCommits)
@@ -336,6 +362,8 @@ RepositorySnapshot GitRepository::load(const CompareRequest &request, const std:
   args.push_back(L"--");
   if (!request.path.empty())
     args.push_back(request.path);
+  else if (!pathspec.empty())
+    args.push_back(pathspec);
   snapshot.document = UnifiedDiffParser{}.parse(run(args).out);
   if (!snapshot.document.warnings.empty())
     snapshot.notice = snapshot.document.warnings.front();

@@ -11,7 +11,7 @@ class MainWindow
 {
 public:
   int run(HINSTANCE instance, int show, std::wstring directory, std::wstring automationDirectory = L"", std::wstring hashPrefix = L"",
-    bool startHistory = false);
+    bool startHistory = false, std::wstring pathFilter = L"");
   ~MainWindow();
 
 private:
@@ -132,7 +132,7 @@ private:
   HINSTANCE instance_{};
   HFONT font_{}, boldFont_{};
   UINT dpi_{96};
-  std::wstring directory_, selectedPath_, selectedListKey_;
+  std::wstring directory_, pathFilter_, selectedPath_, selectedListKey_;
   std::wstring readyBase_, rangeBase_;
   ChangeSource baseMode_{ChangeSource::Unstaged};
   std::wstring commitBranch_, commitBranchCommit_;

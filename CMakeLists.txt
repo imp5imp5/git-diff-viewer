@@ -44,5 +44,9 @@ if(BUILD_TESTING)
       -Executable "$<TARGET_FILE:GitDiffViewer>"
       -Artifacts "${CMAKE_CURRENT_BINARY_DIR}/interface-$<CONFIG>")
     set_tests_properties(interface PROPERTIES TIMEOUT 90)
+    add_test(NAME path_filter_interface COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+      -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/PathFilterInterfaceTests.ps1"
+      -Executable "$<TARGET_FILE:GitDiffViewer>")
+    set_tests_properties(path_filter_interface PROPERTIES TIMEOUT 90)
   endif()
 endif()

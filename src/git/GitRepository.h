@@ -24,6 +24,7 @@ struct CompareRequest
   std::wstring historyHead;
   bool historyAppend{};
   std::vector<std::wstring> historyExcludedCommits;
+  std::wstring pathFilter;
   std::wstring path;
   std::wstring selectionKey;
   bool selectedOnly{};

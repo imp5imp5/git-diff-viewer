@@ -68,6 +68,20 @@ Set-Location D:\dagor\prog
 & T:\differ\build\Release\gfd.exe
 ```
 
+To filter the displayed changes and commit history to a file or folder inside a repository, pass its relative path:
+
+```powershell
+& .\build\Release\gfd.exe src/git
+```
+
+This opens in **History** mode. The filter stays active when you switch sources, refresh, or load more history. Paths are literal, not wildcards. `-- <path>` remains available, including when you supply a repository directory explicitly:
+
+```powershell
+& .\build\Release\gfd.exe "D:\dagor" -- prog
+```
+
+You can also launch from outside the repository by passing a relative path into it (for example, `gfd git-diff-viewer/src/git` from its parent directory). An absolute directory or a path to the repository root still selects the repository to open.
+
 You can also supply a directory explicitly:
 
 ```powershell

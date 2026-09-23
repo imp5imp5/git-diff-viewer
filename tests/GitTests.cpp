@@ -296,6 +296,79 @@ try
       "history supports detached HEAD");
   }
   {
+    fs::create_directory(dir / L"scope");
+    fs::create_directory(dir / L"elsewhere");
+    write(L"scope/one.txt", "one\n");
+    run({L"add", L"scope"});
+    run({L"commit", L"-m", L"scope one"});
+    write(L"elsewhere/outside.txt", "outside\n");
+    run({L"add", L"elsewhere"});
+    run({L"commit", L"-m", L"outside"});
+    write(L"scope/two.txt", "two\n");
+    run({L"add", L"scope"});
+    run({L"commit", L"-m", L"scope two"});
+    CompareRequest filtered{dir.wstring(), ChangeSource::History, {}, {}};
+    filtered.pathFilter = L"scope";
+    filtered.historyLimit = 1;
+    auto outgoingFiltered = repo.load(filtered, cancel);
+    check(outgoingFiltered.history.outgoingCommits.size() == 2 && outgoingFiltered.history.outgoingDocuments.size() == 2 &&
+            outgoingFiltered.history.outgoing.files.size() == 2 && outgoingFiltered.history.commits.empty(),
+      "filtered History outgoing section");
+    run({L"branch", L"--unset-upstream"});
+    auto first = repo.load(filtered, cancel);
+    check(first.history.commits.size() == 1 && first.history.commits[0].subject == L"scope two" && first.history.hasMore &&
+            first.history.commitDocuments.size() == 1 && first.history.commitDocuments[0].files.size() == 1 &&
+            first.history.commitDocuments[0].files[0].path() == L"scope/two.txt",
+      "filtered history includes only matching commits and patches");
+    filtered.historyAppend = true;
+    filtered.historyHead = first.history.initialHead;
+    filtered.historySkip = first.history.nextSkip;
+    auto next = repo.load(filtered, cancel);
+    check(next.history.commits.size() == 1 && next.history.commits[0].subject == L"scope one" && !next.history.hasMore,
+      "filtered history pagination skips unrelated commits");
+    filtered.historyAppend = false;
+    filtered.source = ChangeSource::ReadyToPush;
+    filtered.base = L"main";
+    auto readyFiltered = repo.load(filtered, cancel);
+    check(readyFiltered.commits.size() == 2 && readyFiltered.document.files.size() == 2 && readyFiltered.commitDocuments.size() == 2 &&
+            readyFiltered.commitDocuments[0].files.size() == 1,
+      "filtered outgoing commits and combined diff");
+    filtered.source = ChangeSource::Range;
+    filtered.target = L"HEAD";
+    check(repo.load(filtered, cancel).commits.size() == 2, "filtered commit range");
+    filtered.source = ChangeSource::Commit;
+    filtered.target = first.history.commits[0].id;
+    check(repo.load(filtered, cancel).document.files.size() == 1, "filtered single commit");
+    filtered.source = ChangeSource::History;
+    filtered.directory = (dir / L"scope").wstring();
+    filtered.pathFilter = L".";
+    filtered.historySkip = 0;
+    check(repo.load(filtered, cancel).history.commits[0].subject == L"scope two", "filter is relative to launch directory");
+    filtered.directory = dir.wstring();
+    filtered.pathFilter = L"scope";
+    write(L"scope/one.txt", "staged\n");
+    write(L"elsewhere/outside.txt", "staged\n");
+    run({L"add", L"scope", L"elsewhere"});
+    filtered.source = ChangeSource::Staged;
+    auto stagedFiltered = repo.load(filtered, cancel);
+    check(stagedFiltered.document.files.size() == 1 && stagedFiltered.document.files[0].path() == L"scope/one.txt",
+      "filtered staged changes");
+    write(L"scope/one.txt", "unstaged\n");
+    filtered.source = ChangeSource::Unstaged;
+    check(repo.load(filtered, cancel).document.files.size() == 1, "filtered unstaged changes");
+    filtered.pathFilter = L"../outside";
+    bool escaped = false;
+    try
+    {
+      repo.load(filtered, cancel);
+    }
+    catch (const std::invalid_argument &)
+    {
+      escaped = true;
+    }
+    check(escaped, "filter outside repository is rejected");
+  }
+  {
     auto unborn = dir / L"unborn";
     fs::create_directory(unborn);
     check(git.run(unborn.wstring(), {L"init", L"-b", L"main"}, cancel).exitCode == 0, "unborn init");
