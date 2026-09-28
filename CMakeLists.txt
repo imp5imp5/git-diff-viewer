@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(GitDiffViewer VERSION 0.1.0 LANGUAGES CXX)
+project(GitDiffViewer VERSION 0.1.1 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -48,6 +48,10 @@ if(BUILD_TESTING)
       -Executable "$<TARGET_FILE:GitDiffViewer>"
       -Artifacts "${CMAKE_CURRENT_BINARY_DIR}/interface-$<CONFIG>")
     set_tests_properties(interface PROPERTIES TIMEOUT 90)
+    add_test(NAME gap_interface COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+      -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/GapInterfaceTests.ps1"
+      -Executable "$<TARGET_FILE:GitDiffViewer>")
+    set_tests_properties(gap_interface PROPERTIES TIMEOUT 60)
     add_test(NAME path_filter_interface COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
       -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/PathFilterInterfaceTests.ps1"
       -Executable "$<TARGET_FILE:GitDiffViewer>")

@@ -10,6 +10,8 @@ public:
   ~DiffView();
   HWND create(HWND parent, HINSTANCE instance);
   void setFile(const FileDiff *file, bool preserve = false, bool plainText = false);
+  void setContextFile(const FileDiff *file);
+  void activateGap(size_t gap, int action, bool doubleClick = false);
   bool plainText() const { return plain_; }
   void setMessage(std::wstring message);
   void setSideBySide(bool enabled);
@@ -46,6 +48,9 @@ private:
   LRESULT message(UINT, WPARAM, LPARAM);
   void paint(HDC printDC = nullptr);
   void decorateRows();
+  void buildRows();
+  void expandGap(size_t gap, int action);
+  RECT gapButtonRect(const PresentationRow &row, int action, int contentRight, int rowTop) const;
   void updateScroll();
   void scrollTo(int row);
   void showChangeBlock(size_t index, bool flash);
@@ -72,6 +77,19 @@ private:
   HWND hwnd_{};
   HFONT font_{};
   const FileDiff *file_{};
+  const FileDiff *compactFile_{}, *contextFile_{};
+  struct GapExpansion
+  {
+    size_t top{}, bottom{};
+    bool all{};
+  };
+  std::vector<GapExpansion> gapExpansions_;
+  size_t pendingGap_{noLine};
+  int pendingAction_{}, pendingCount_{};
+  size_t lastGapClick_{noLine};
+  int lastGapAction_{};
+  POINT lastGapPoint_{};
+  ULONGLONG lastGapTick_{};
   std::vector<PresentationRow> rows_;
   std::vector<ChangeBlock> changeBlocks_, navigationBlocks_;
   std::vector<int> searchRows_;

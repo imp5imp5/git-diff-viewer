@@ -974,6 +974,12 @@ void MainWindow::selectExplorerFile(int index)
     diff_.showFirstChange();
   if (fullFile_ && file == item.file)
     requestSelectedFullFile(item);
+  else if (!fullFile_ && !item.file->hunks.empty())
+  {
+    auto cached = fullFileDocuments_.find(item.key);
+    if (cached != fullFileDocuments_.end() && !cached->second.files.empty())
+      diff_.setContextFile(&cached->second.files.front());
+  }
   updateStatus();
 }
 void MainWindow::sourceChanged()
@@ -1139,15 +1145,20 @@ void MainWindow::loaded()
       return;
     }
     auto document = fullFileDocuments_.insert_or_assign(result->request.selectionKey, std::move(result->snapshot.document)).first;
-    if (fullFile_ && selectedListKey_ == result->request.selectionKey && !document->second.files.empty())
+    if (selectedListKey_ == result->request.selectionKey && !document->second.files.empty())
     {
-      diff_.setFile(&document->second.files.front());
-      syncComments();
-      auto saved = fileScrollPositions_.find(fileScrollKey(selectedListKey_));
-      if (saved != fileScrollPositions_.end())
-        diff_.scroll(saved->second);
+      if (fullFile_)
+      {
+        diff_.setFile(&document->second.files.front());
+        syncComments();
+        auto saved = fileScrollPositions_.find(fileScrollKey(selectedListKey_));
+        if (saved != fileScrollPositions_.end())
+          diff_.scroll(saved->second);
+        else
+          diff_.showFirstChange();
+      }
       else
-        diff_.showFirstChange();
+        diff_.setContextFile(&document->second.files.front());
     }
     updateStatus();
     return;
@@ -1558,9 +1569,19 @@ void MainWindow::toggleCommitMessage()
   int current = static_cast<int>(SendMessageW(files_, LB_GETCURSEL, 0, 0));
   if (current == 0)
   {
-    if (snapshot_.document.files.empty())
+    int next = messageReturnIndex_;
+    if (next <= 0 || static_cast<size_t>(next) >= fileListItems_.size() || fileListItems_[next].kind != FileListItemKind::File)
+    {
+      next = -1;
+      for (size_t i = 1; i < fileListItems_.size(); ++i)
+        if (fileListItems_[i].kind == FileListItemKind::File)
+        {
+          next = static_cast<int>(i);
+          break;
+        }
+    }
+    if (next < 0)
       return;
-    int next = std::clamp(messageReturnIndex_, 1, static_cast<int>(snapshot_.document.files.size()));
     SendMessageW(files_, LB_SETCURSEL, next, 0);
     selectFile();
     diff_.scroll(messageReturnTop_);
@@ -1732,6 +1753,12 @@ void MainWindow::selectFile()
       diff_.showFirstChange();
     if (fullFile_ && file == item.file)
       requestSelectedFullFile(item);
+    else if (!fullFile_ && !item.file->hunks.empty())
+    {
+      auto cached = fullFileDocuments_.find(item.key);
+      if (cached != fullFileDocuments_.end() && !cached->second.files.empty())
+        diff_.setContextFile(&cached->second.files.front());
+    }
   }
 }
 void MainWindow::syncComments()
@@ -1857,7 +1884,7 @@ void MainWindow::showAbout()
   dialog.hwndParent = hwnd_;
   dialog.pszWindowTitle = L"About GitDiffViewer";
   dialog.pszMainInstruction = L"GitDiffViewer";
-  dialog.pszContent = L"Version 6\n\nAuthor: Aleksei Borisov\n2026\nLicensed under the MIT License\n\n"
+  dialog.pszContent = L"Version 7\n\nAuthor: Aleksei Borisov\n2026\nLicensed under the MIT License\n\n"
                       L"<a href=\"https://github.com/imp5imp5/git-diff-viewer\">github.com/imp5imp5/git-diff-viewer</a>";
   dialog.dwFlags = TDF_ENABLE_HYPERLINKS | TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
   dialog.dwCommonButtons = TDCBF_OK_BUTTON;
@@ -3334,6 +3361,15 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
     case repositoryReady: loaded(); return 0;
     case WM_APP + 2: openCommentEditor(); return 0;
     case WM_APP + 3: findText_.clear(); return 0;
+    case WM_APP + 4:
+      if (!loading_ && !selectedListKey_.empty())
+        for (const auto &item : fileListItems_)
+          if (item.key == selectedListKey_ && item.file)
+          {
+            requestSelectedFullFile(item);
+            break;
+          }
+      return 0;
     case WM_COMMAND:
       switch (LOWORD(w))
       {

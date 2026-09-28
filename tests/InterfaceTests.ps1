@@ -219,7 +219,7 @@ try {
         $panels.explorerFiles.Count -gt 0) 'Ready to push has a combined section in panel layout'
     Invoke-App 'source' @('commit') | Out-Null
     $panels=Wait-Idle
-    Check ($panels.explorerGroups[0].label -eq 'Commit' -and
+    Check ($panels.explorerGroups[0].kind -eq 'commit' -and
         $panels.explorerMessageText.Contains('Author:')) 'Single commit works in panel layout'
     Invoke-App 'source' @('range') | Out-Null
     Invoke-App 'base' @('main') | Out-Null
@@ -411,7 +411,7 @@ try {
     $returned=Invoke-App 'toggle-message'
     Check (-not $returned.plainText -and $returned.selectedFile -eq 'second.txt' -and $returned.topRow -eq $state.topRow) 'Message toggle restores file and scroll'
     $first=Invoke-App 'navigate-file' @('-1')
-    Check ($first.selectedFile -eq '<<Commit Message>>' -and $first.plainText) 'List navigation includes the commit message entry'
+    Check ($first.selectedFile -eq '<<Summary>>' -and $first.plainText) 'List navigation includes the comparison summary'
     Invoke-App 'source' @('commit') | Out-Null
     $state=Wait-Idle
     Check ($state.files[0].path -eq '<<Commit Message>>') 'Single commit mode also includes message'

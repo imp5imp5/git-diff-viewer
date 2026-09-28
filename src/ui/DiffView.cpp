@@ -109,7 +109,7 @@ void DiffView::setDpi(UINT dpi)
   headerHeight_ = std::max(MulDiv(62, static_cast<int>(dpi), 96), rowHeight_ * 2);
   SelectObject(dc, old);
   ReleaseDC(hwnd_, dc);
-  setFile(file_, true, plain_);
+  setFile(compactFile_ ? compactFile_ : file_, true, plain_);
 }
 void DiffView::setFile(const FileDiff *file, bool preserve, bool plainText)
 {
@@ -120,9 +120,18 @@ void DiffView::setFile(const FileDiff *file, bool preserve, bool plainText)
   plain_ = plainText;
   headerHeight_ = plain_ ? 0 : std::max(MulDiv(62, static_cast<int>(dpi_), 96), rowHeight_ * 2);
   const FileDiff *previousFile = file_;
-  file_ = file;
+  if (!file || (file != compactFile_ && file != contextFile_))
+  {
+    compactFile_ = file;
+    contextFile_ = nullptr;
+    gapExpansions_.clear();
+    pendingGap_ = noLine;
+    pendingCount_ = 0;
+    lastGapClick_ = noLine;
+  }
+  file_ = contextFile_ && !plain_ ? contextFile_ : compactFile_;
   auto previousRows = rows_;
-  rows_ = file ? buildPresentation(*file, side_) : std::vector<PresentationRow>{};
+  buildRows();
   decorateRows();
   rebuildSearch();
   if (preserve && previousFile == file && previousRows.size() != rows_.size() && !previousRows.empty() && !rows_.empty())
@@ -188,7 +197,7 @@ void DiffView::setSideBySide(bool enabled)
   clearIdentifierHover();
   side_ = enabled;
   auto previousRows = rows_;
-  rows_ = file_ ? buildPresentation(*file_, side_) : std::vector<PresentationRow>{};
+  buildRows();
   decorateRows();
   rebuildSearch();
   top_ = static_cast<int>(correspondingRow(previousRows, static_cast<size_t>(top_), rows_));
@@ -200,6 +209,265 @@ void DiffView::setSideBySide(bool enabled)
   stopChangeFlash();
   updateScroll();
   InvalidateRect(hwnd_, nullptr, FALSE);
+}
+void DiffView::setContextFile(const FileDiff *file)
+{
+  if (!compactFile_ || !file || plain_)
+    return;
+  contextFile_ = file;
+  file_ = file;
+  auto previousRows = rows_;
+  size_t expandedGap = pendingGap_;
+  int expandedCount = pendingCount_;
+  int oldGapRow = -1;
+  for (size_t i = 0; i < previousRows.size(); ++i)
+    if (previousRows[i].gap == expandedGap)
+      oldGapRow = static_cast<int>(i);
+  buildRows();
+  if (pendingGap_ != noLine)
+  {
+    size_t pending = pendingGap_;
+    pendingGap_ = noLine;
+    if (pending < gapExpansions_.size())
+    {
+      if (pendingAction_ == 0)
+        gapExpansions_[pending].top += 10 * pendingCount_;
+      else if (pendingAction_ == 1)
+        gapExpansions_[pending].all = true;
+      else
+        gapExpansions_[pending].bottom += 10 * pendingCount_;
+      buildRows();
+    }
+    pendingCount_ = 0;
+  }
+  decorateRows();
+  rebuildSearch();
+  if (oldGapRow >= 0)
+  {
+    for (size_t i = 0; i < rows_.size(); ++i)
+      if (rows_[i].gap == expandedGap)
+      {
+        top_ = static_cast<int>(i) - (oldGapRow - top_) - (pendingAction_ == 0 ? 10 * expandedCount : 0);
+        break;
+      }
+  }
+  updateScroll();
+  InvalidateRect(hwnd_, nullptr, FALSE);
+}
+void DiffView::buildRows()
+{
+  rows_ = file_ ? buildPresentation(*file_, side_) : std::vector<PresentationRow>{};
+  if (!compactFile_ || compactFile_->hunks.empty())
+    return;
+  if (!contextFile_ || file_ != contextFile_)
+  {
+    std::vector<PresentationRow> compact;
+    size_t gap = 0;
+    const auto &first = compactFile_->hunks.front();
+    bool leading = first.oldStart > 1 || first.newStart > 1;
+    for (const auto &row : rows_)
+    {
+      if (leading && row.hunk == 0 && row.left == noLine && row.right == noLine)
+      {
+        PresentationRow omitted;
+        omitted.gap = gap++;
+        omitted.gapLines = static_cast<size_t>(std::max(first.oldStart, first.newStart) - 1);
+        omitted.gapAtStart = true;
+        compact.push_back(std::move(omitted));
+        leading = false;
+      }
+      if (row.hunk > 0 && row.hunk < compactFile_->hunks.size() && row.left == noLine && row.right == noLine &&
+          row.meta.find(L"unchanged lines omitted") != std::wstring::npos)
+      {
+        PresentationRow omitted;
+        omitted.gap = gap++;
+        const auto &previous = compactFile_->hunks[row.hunk - 1];
+        const auto &next = compactFile_->hunks[row.hunk];
+        omitted.gapLines = static_cast<size_t>(std::max(0, next.newStart - previous.newStart - previous.newCount));
+        compact.push_back(std::move(omitted));
+      }
+      else
+        compact.push_back(row);
+    }
+    if (compactFile_->status != FileStatus::Added && compactFile_->status != FileStatus::Deleted)
+    {
+      PresentationRow trailing;
+      trailing.gap = gap;
+      trailing.gapAtEnd = true;
+      compact.push_back(std::move(trailing));
+    }
+    rows_ = std::move(compact);
+    return;
+  }
+  std::vector<PresentationRow> filtered;
+  size_t gap = 0;
+  for (size_t i = 0; i < rows_.size();)
+  {
+    const auto &row = rows_[i];
+    auto hidden = [&](const PresentationRow &candidate) {
+      if (candidate.hunk == noLine || candidate.hunk >= contextFile_->hunks.size())
+        return false;
+      size_t index = candidate.right != noLine ? candidate.right : candidate.left;
+      if (index == noLine || index >= contextFile_->hunks[candidate.hunk].lines.size())
+        return false;
+      const auto &line = contextFile_->hunks[candidate.hunk].lines[index];
+      if (line.type != DiffLineType::Context)
+        return false;
+      for (const auto &hunk : compactFile_->hunks)
+        if ((line.newLine && *line.newLine >= hunk.newStart && *line.newLine < hunk.newStart + hunk.newCount) ||
+            (line.oldLine && *line.oldLine >= hunk.oldStart && *line.oldLine < hunk.oldStart + hunk.oldCount))
+          return false;
+      return true;
+    };
+    if (row.hunk != noLine && row.left == noLine && row.right == noLine)
+    {
+      ++i;
+      continue;
+    }
+    if (!hidden(row))
+    {
+      filtered.push_back(row);
+      ++i;
+      continue;
+    }
+    size_t end = i + 1;
+    while (end < rows_.size() && hidden(rows_[end]))
+      ++end;
+    if (gapExpansions_.size() <= gap)
+      gapExpansions_.resize(gap + 1);
+    const auto &expansion = gapExpansions_[gap];
+    size_t count = end - i;
+    size_t top = expansion.all ? count : std::min(count, expansion.top);
+    size_t bottom = expansion.all ? 0 : std::min(count - top, expansion.bottom);
+    filtered.insert(filtered.end(), rows_.begin() + i, rows_.begin() + i + top);
+    if (top + bottom < count)
+    {
+      PresentationRow omitted;
+      omitted.gap = gap;
+      omitted.gapLines = count - top - bottom;
+      auto hasData = [&](size_t first, size_t last) {
+        for (size_t row = first; row < last; ++row)
+        {
+          const auto &candidate = rows_[row];
+          if (candidate.hunk >= contextFile_->hunks.size())
+            continue;
+          const auto &lines = contextFile_->hunks[candidate.hunk].lines;
+          for (size_t index : {candidate.left, candidate.right})
+            if (index < lines.size() && lines[index].type != DiffLineType::Meta)
+              return true;
+        }
+        return false;
+      };
+      omitted.gapAtStart = !hasData(0, i);
+      omitted.gapAtEnd = !hasData(end, rows_.size());
+      filtered.push_back(std::move(omitted));
+    }
+    filtered.insert(filtered.end(), rows_.begin() + end - bottom, rows_.begin() + end);
+    ++gap;
+    i = end;
+  }
+  rows_ = std::move(filtered);
+  for (const auto &hunk : compactFile_->hunks)
+  {
+    auto source =
+      std::find_if(hunk.lines.begin(), hunk.lines.end(), [](const DiffLine &line) { return line.type != DiffLineType::Meta; });
+    if (source == hunk.lines.end())
+      continue;
+    for (size_t i = 0; i < rows_.size(); ++i)
+    {
+      const auto &row = rows_[i];
+      if (row.hunk == noLine || row.hunk >= contextFile_->hunks.size())
+        continue;
+      const auto &lines = contextFile_->hunks[row.hunk].lines;
+      bool matches = false;
+      for (size_t index : {row.left, row.right})
+        if (index != noLine && index < lines.size())
+        {
+          const auto &line = lines[index];
+          matches |= (source->oldLine && line.oldLine == source->oldLine) || (source->newLine && line.newLine == source->newLine);
+        }
+      if (matches)
+      {
+        const DiffLine *previous = nullptr;
+        if (i > 0)
+        {
+          const auto &preceding = rows_[i - 1];
+          previous = line(preceding, preceding.right != noLine ? preceding.right : preceding.left);
+        }
+        bool adjacent = previous && previous->type == DiffLineType::Context &&
+                        (!source->oldLine || (previous->oldLine && *previous->oldLine + 1 == *source->oldLine)) &&
+                        (!source->newLine || (previous->newLine && *previous->newLine + 1 == *source->newLine));
+        if (!adjacent)
+          rows_.insert(rows_.begin() + i, PresentationRow{noLine, noLine, noLine, hunk.header});
+        break;
+      }
+    }
+  }
+}
+void DiffView::activateGap(size_t gap, int action, bool doubleClick)
+{
+  if (action < 0 || action > 2)
+    return;
+  for (size_t row = 0; row < rows_.size(); ++row)
+    if (rows_[row].gap == gap)
+    {
+      scrollTo(static_cast<int>(row));
+      RECT button =
+        gapButtonRect(rows_[row], action, scrollbarRect().left, headerHeight_ + (static_cast<int>(row) - top_) * rowHeight_);
+      if (button.right <= button.left)
+        return;
+      LPARAM point = MAKELPARAM((button.left + button.right) / 2, (button.top + button.bottom) / 2);
+      SendMessageW(hwnd_, WM_LBUTTONDOWN, MK_LBUTTON, point);
+      SendMessageW(hwnd_, WM_LBUTTONUP, 0, point);
+      if (doubleClick)
+      {
+        SendMessageW(hwnd_, WM_LBUTTONDBLCLK, MK_LBUTTON, point);
+        SendMessageW(hwnd_, WM_LBUTTONUP, 0, point);
+      }
+      return;
+    }
+}
+void DiffView::expandGap(size_t gap, int action)
+{
+  if (!contextFile_)
+  {
+    if (pendingGap_ == gap && pendingAction_ == action)
+      ++pendingCount_;
+    else
+    {
+      pendingGap_ = gap;
+      pendingAction_ = action;
+      pendingCount_ = 1;
+      SendMessageW(GetParent(hwnd_), WM_APP + 4, 0, 0);
+    }
+    return;
+  }
+  if (gap >= gapExpansions_.size())
+    return;
+  if (action == 0)
+    gapExpansions_[gap].top += 10;
+  else if (action == 1)
+    gapExpansions_[gap].all = true;
+  else
+    gapExpansions_[gap].bottom += 10;
+  buildRows();
+  decorateRows();
+  rebuildSearch();
+  updateScroll();
+  InvalidateRect(hwnd_, nullptr, FALSE);
+}
+RECT DiffView::gapButtonRect(const PresentationRow &row, int action, int contentRight, int rowTop) const
+{
+  if ((action == 0 && row.gapAtStart) || (action == 2 && row.gapAtEnd))
+    return {};
+  bool showUp = !row.gapAtStart, showDown = !row.gapAtEnd;
+  int count = 1 + static_cast<int>(showUp) + static_cast<int>(showDown);
+  int column = action - (showUp ? 0 : 1);
+  int spacing = MulDiv(4, static_cast<int>(dpi_), 96);
+  int margin = MulDiv(8, static_cast<int>(dpi_), 96);
+  int width = std::min(MulDiv(96, static_cast<int>(dpi_), 96), std::max(1, (contentRight - margin - (count - 1) * spacing) / count));
+  int left = std::max(0, contentRight - margin - count * width - (count - 1) * spacing) + column * (width + spacing);
+  return {left, rowTop + 2, left + width, rowTop + rowHeight_ - 2};
 }
 void DiffView::decorateRows()
 {
@@ -656,9 +924,10 @@ void DiffView::drawVerticalScrollbar(HDC dc, const RECT &area) const
 }
 const DiffLine *DiffView::line(const PresentationRow &row, size_t index) const
 {
-  if (!file_ || row.hunk == noLine || index == noLine)
+  if (!file_ || row.hunk >= file_->hunks.size())
     return nullptr;
-  return &file_->hunks[row.hunk].lines[index];
+  const auto &lines = file_->hunks[row.hunk].lines;
+  return index < lines.size() ? &lines[index] : nullptr;
 }
 void DiffView::paint(HDC printDC)
 {
@@ -799,6 +1068,27 @@ void DiffView::paint(HDC printDC)
       r.left = boundary + charWidth_ - horizontal_;
       text(dc, r, row.commentText, ThemeColor::CommentText);
       drawSearchBox(r, clip, row.commentText, activeSearch);
+    }
+    else if (row.gap != noLine)
+    {
+      fill(dc, r, ThemeColor::Metadata);
+      const std::wstring labels[3] = {L"↑ 10 lines", L"Unfold", L"↓ 10 lines"};
+      auto firstButton = gapButtonRect(row, row.gapAtStart ? 1 : 0, contentRight, r.top);
+      RECT caption{pad, r.top, firstButton.left - pad, r.bottom};
+      if (caption.right > caption.left)
+        text(dc, caption, row.gapLines ? std::to_wstring(row.gapLines) + L" unchanged lines" : L"Unchanged lines omitted",
+          ThemeColor::MetadataText, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+      for (int part = 0; part < 3; ++part)
+      {
+        RECT button = gapButtonRect(row, part, contentRight, r.top);
+        if (button.right <= button.left)
+          continue;
+        fill(dc, button, ThemeColor::Window);
+        HBRUSH border = CreateSolidBrush(themeColor(ThemeColor::Border));
+        FrameRect(dc, &button, border);
+        DeleteObject(border);
+        text(dc, button, labels[part], ThemeColor::MetadataText, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+      }
     }
     else if (!row.meta.empty())
     {
@@ -1120,6 +1410,21 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
           SetCursor(LoadCursorW(nullptr, IDC_ARROW));
           return TRUE;
         }
+        if (point.y >= headerHeight_ && point.x >= 0 && point.x < bar.left)
+        {
+          int row = top_ + (point.y - headerHeight_) / rowHeight_;
+          if (row >= 0 && row < static_cast<int>(rows_.size()) && rows_[static_cast<size_t>(row)].gap != noLine)
+            for (int action = 0; action < 3; ++action)
+            {
+              RECT button =
+                gapButtonRect(rows_[static_cast<size_t>(row)], action, bar.left, headerHeight_ + (row - top_) * rowHeight_);
+              if (button.right > button.left && PtInRect(&button, point))
+              {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+              }
+            }
+        }
       }
       break;
     case WM_KILLFOCUS:
@@ -1161,6 +1466,18 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
     }
     case WM_LBUTTONDBLCLK:
     {
+      POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+      int dx = std::abs(point.x - lastGapPoint_.x), dy = std::abs(point.y - lastGapPoint_.y);
+      if (lastGapClick_ != noLine && GetTickCount64() - lastGapTick_ <= GetDoubleClickTime() &&
+          dx <= GetSystemMetrics(SM_CXDOUBLECLK) && dy <= GetSystemMetrics(SM_CYDOUBLECLK))
+      {
+        size_t gap = lastGapClick_;
+        int action = lastGapAction_;
+        lastGapClick_ = noLine;
+        if (std::any_of(rows_.begin(), rows_.end(), [&](const PresentationRow &row) { return row.gap == gap; }))
+          expandGap(gap, action);
+        return 0;
+      }
       if (GET_Y_LPARAM(l) < headerHeight_ || rows_.empty())
         return 0;
       int row = std::clamp(top_ + (GET_Y_LPARAM(l) - headerHeight_) / rowHeight_, 0, static_cast<int>(rows_.size()) - 1);
@@ -1199,6 +1516,25 @@ LRESULT DiffView::message(UINT msg, WPARAM w, LPARAM l)
       }
       if (GET_Y_LPARAM(l) < headerHeight_ || rows_.empty())
         return 0;
+      int clicked = std::min(static_cast<int>(rows_.size()) - 1, top_ + (GET_Y_LPARAM(l) - headerHeight_) / rowHeight_);
+      if (rows_[static_cast<size_t>(clicked)].gap != noLine)
+      {
+        int rowTop = headerHeight_ + (clicked - top_) * rowHeight_;
+        for (int action = 0; action < 3; ++action)
+        {
+          RECT button = gapButtonRect(rows_[static_cast<size_t>(clicked)], action, bar.left, rowTop);
+          if (button.right > button.left && PtInRect(&button, point))
+          {
+            lastGapClick_ = rows_[static_cast<size_t>(clicked)].gap;
+            lastGapAction_ = action;
+            lastGapPoint_ = point;
+            lastGapTick_ = GetTickCount64();
+            expandGap(lastGapClick_, action);
+            break;
+          }
+        }
+        return 0;
+      }
       selected_ = std::min(static_cast<int>(rows_.size()) - 1, top_ + (GET_Y_LPARAM(l) - headerHeight_) / rowHeight_);
       if (!(GetKeyState(VK_SHIFT) & 0x8000) || anchor_ < 0)
         selectedAfter_ = !side_ || point.x >= (bar.left / 2);

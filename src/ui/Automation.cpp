@@ -152,11 +152,12 @@ std::string MainWindow::stateJson() const
   out += "],\"controls\":[";
   first = true;
   const std::pair<const wchar_t *, HWND> controls[] = {{L"refresh", refresh_}, {L"source", source_}, {L"view", view_},
-    {L"full-file", fullFileButton_}, {L"theme", themeButton_}, {L"copy-comments", copyCommentsButton_}, {L"comments-view", commentsViewButton_}, {L"info", info_},
-    {L"base", base_}, {L"target", target_}, {L"compare", compare_}, {L"files", files_}, {L"commits", commits_},
-    {L"diff", diff_.handle()}, {L"status", status_}, {L"layout", layoutButton_}, {L"explorer-commits", explorerCommits_},
-    {L"explorer-message", explorerMessage_}, {L"explorer-files", explorerFiles_}, {L"explorer-commits-scroll", explorerBars_[0]},
-    {L"explorer-files-scroll", explorerBars_[1]}, {L"explorer-message-scroll", explorerBars_[2]}};
+    {L"full-file", fullFileButton_}, {L"theme", themeButton_}, {L"copy-comments", copyCommentsButton_},
+    {L"comments-view", commentsViewButton_}, {L"info", info_}, {L"base", base_}, {L"target", target_}, {L"compare", compare_},
+    {L"files", files_}, {L"commits", commits_}, {L"diff", diff_.handle()}, {L"status", status_}, {L"layout", layoutButton_},
+    {L"explorer-commits", explorerCommits_}, {L"explorer-message", explorerMessage_}, {L"explorer-files", explorerFiles_},
+    {L"explorer-commits-scroll", explorerBars_[0]}, {L"explorer-files-scroll", explorerBars_[1]},
+    {L"explorer-message-scroll", explorerBars_[2]}};
   for (const auto &c : controls)
   {
     RECT bounds{};
@@ -166,7 +167,8 @@ std::string MainWindow::stateJson() const
       out += ',';
     first = false;
     bool toolbarButton = c.second == refresh_ || c.second == view_ || c.second == fullFileButton_ || c.second == themeButton_ ||
-                         c.second == layoutButton_ || c.second == copyCommentsButton_ || c.second == commentsViewButton_ || c.second == compare_;
+                         c.second == layoutButton_ || c.second == copyCommentsButton_ || c.second == commentsViewButton_ ||
+                         c.second == compare_;
     std::wstring hint;
     if (toolbarButton)
     {
@@ -179,8 +181,9 @@ std::string MainWindow::stateJson() const
       SendMessageW(tooltip_, TTM_GETTEXTW, std::size(buffer), reinterpret_cast<LPARAM>(&tool));
       hint = buffer;
     }
-    bool checked = (c.second == view_ || c.second == fullFileButton_ || c.second == layoutButton_ || c.second == commentsViewButton_) &&
-                   SendMessageW(c.second, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    bool checked =
+      (c.second == view_ || c.second == fullFileButton_ || c.second == layoutButton_ || c.second == commentsViewButton_) &&
+      SendMessageW(c.second, BM_GETCHECK, 0, 0) == BST_CHECKED;
     out += "{\"id\":" + json(c.first) + ",\"text\":" + json(label(c.second)) + ",\"hint\":" + json(hint) +
            ",\"checked\":" + (checked ? "true" : "false") +
            ",\"visible\":" + ((GetWindowLongPtrW(c.second, GWL_STYLE) & WS_VISIBLE) ? "true" : "false") +
@@ -211,6 +214,28 @@ std::string MainWindow::stateJson() const
       first = false;
       out += std::to_string(i);
     }
+  out += "],\"gaps\":[";
+  first = true;
+  for (size_t i = 0; i < rows.size(); ++i)
+    if (rows[i].gap != noLine)
+    {
+      if (!first)
+        out += ',';
+      first = false;
+      out += "{\"row\":" + std::to_string(i) + ",\"id\":" + std::to_string(rows[i].gap) +
+             ",\"remaining\":" + std::to_string(rows[i].gapLines) + ",\"up\":" + (rows[i].gapAtStart ? "false" : "true") +
+             ",\"down\":" + (rows[i].gapAtEnd ? "false" : "true") + "}";
+    }
+  out += "],\"hunkHeaderRows\":[";
+  first = true;
+  for (size_t i = 0; i < rows.size(); ++i)
+    if (rows[i].meta.rfind(L"@@ ", 0) == 0)
+    {
+      if (!first)
+        out += ',';
+      first = false;
+      out += std::to_string(i);
+    }
   out += "],\"visibleRows\":[";
   first = true;
   for (int i = diff_.topRow();
@@ -218,7 +243,7 @@ std::string MainWindow::stateJson() const
   {
     const auto &row = rows[static_cast<size_t>(i)];
     auto cell = [&](size_t index) {
-      if (row.hunk == noLine || index == noLine)
+      if (row.hunk >= file->hunks.size() || index >= file->hunks[row.hunk].lines.size())
         return std::string("null");
       const auto &line = file->hunks[row.hunk].lines[index];
       return "{\"text\":" + json(line.text) + ",\"oldLine\":" + (line.oldLine ? std::to_string(*line.oldLine) : "null") +
@@ -229,6 +254,7 @@ std::string MainWindow::stateJson() const
       out += ',';
     first = false;
     out += "{\"row\":" + std::to_string(i) + ",\"meta\":" + json(row.meta) + ",\"comment\":" + json(row.commentText) +
+           ",\"gap\":" + (row.gap == noLine ? "null" : std::to_string(row.gap)) + ",\"gapLines\":" + std::to_string(row.gapLines) +
            ",\"left\":" + cell(row.left) + ",\"right\":" + cell(row.right) + "}";
   }
   return out + "]}";
@@ -398,6 +424,14 @@ void MainWindow::automationTick()
       }
       else
         throw std::runtime_error("Explorer drag action must be start, move or end.");
+    }
+    else if (command == L"expand-gap" || command == L"double-click-gap")
+    {
+      int gap = integer(arg(0), 0, 1000000);
+      auto action = arg(1);
+      if (action != L"top" && action != L"bottom" && action != L"all")
+        throw std::runtime_error("Gap action must be top, bottom or all.");
+      diff_.activateGap(static_cast<size_t>(gap), action == L"top" ? 0 : action == L"all" ? 1 : 2, command == L"double-click-gap");
     }
     else if (command == L"full-file")
     {

@@ -10,6 +10,9 @@ struct PresentationRow
   std::wstring meta;
   size_t comment{noLine};
   std::wstring commentText;
+  size_t gap{noLine};
+  size_t gapLines{};
+  bool gapAtStart{}, gapAtEnd{};
 };
 struct ChangeBlock
 {

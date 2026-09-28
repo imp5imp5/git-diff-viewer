@@ -158,6 +158,8 @@ Use **Refresh** to reload repository changes. Refresh is manual. Review comments
 
 While a Git operation is running, a moving highlight in the status-line background indicates activity.
 
+In a compact diff, omitted ranges between changes have buttons to reveal 10 lines from either side or the entire range. At the start and end of a file, only the direction toward the change and **Unfold** are shown. The first click loads the selected file's full context and caches it for the current refresh. Expanded ranges remain open when switching between unified and side-by-side views.
+
 Use **Full file** or press `F` to show every line of the selected changed text file instead of only the changed hunks and their surrounding context. Full context is requested lazily for that file and cached for the current refresh, so enabling the mode does not reload every file and commit. The vertical scrollbar shows removed changes in red and added changes in green. Toggle the mode again to return to the compact diff.
 
 ### Keyboard and mouse controls

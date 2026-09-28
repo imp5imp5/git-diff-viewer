@@ -1,8 +1,8 @@
 #include <windows.h>
 101 ICON "app.ico"
 1 VERSIONINFO
- FILEVERSION 0,1,0,0
- PRODUCTVERSION 0,1,0,0
+ FILEVERSION 0,1,1,0
+ PRODUCTVERSION 0,1,1,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0
  FILEOS VOS_NT_WINDOWS32
@@ -14,7 +14,7 @@ BEGIN
   BEGIN
    VALUE "FileDescription", "GitDiffViewer\0"
    VALUE "ProductName", "GitDiffViewer\0"
-   VALUE "FileVersion", "0.1.0\0"
+   VALUE "FileVersion", "0.1.1\0"
   END
  END
  BLOCK "VarFileInfo"

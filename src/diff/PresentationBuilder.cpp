@@ -88,6 +88,13 @@ size_t correspondingRow(const std::vector<PresentationRow> &from, size_t row, co
   if (from.empty() || to.empty())
     return 0;
   const auto &source = from[std::min(row, from.size() - 1)];
+  if (source.gap != noLine)
+  {
+    for (size_t i = 0; i < to.size(); ++i)
+      if (to[i].gap == source.gap)
+        return i;
+    return std::min(row, to.size() - 1);
+  }
   size_t fallback = 0;
   for (size_t i = 0; i < to.size(); ++i)
   {

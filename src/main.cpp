@@ -13,6 +13,28 @@
 #include <stdexcept>
 namespace
 {
+std::wstring crashReportPath;
+LONG WINAPI automationCrash(EXCEPTION_POINTERS *details)
+{
+  if (!crashReportPath.empty())
+  {
+    HANDLE file =
+      CreateFileW(crashReportPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file != INVALID_HANDLE_VALUE)
+    {
+      char report[256]{};
+      auto address = reinterpret_cast<uintptr_t>(details->ExceptionRecord->ExceptionAddress);
+      auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+      int length = sprintf_s(report, "Unhandled exception 0x%08lX at gfd.exe+0x%llX\r\n", details->ExceptionRecord->ExceptionCode,
+        static_cast<unsigned long long>(address - base));
+      DWORD written = 0;
+      if (length > 0)
+        WriteFile(file, report, static_cast<DWORD>(length), &written, nullptr);
+      CloseHandle(file);
+    }
+  }
+  return EXCEPTION_EXECUTE_HANDLER;
+}
 struct FilterPath
 {
   std::wstring directory, path;
@@ -115,6 +137,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
     {
       automation = std::filesystem::absolute(automation).wstring();
       std::filesystem::create_directories(automation);
+      crashReportPath = (std::filesystem::path(automation) / L"crash.txt").wstring();
+      SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
+      SetUnhandledExceptionFilter(automationCrash);
     }
     gdv::MainWindow window;
     result = window.run(instance, show, std::move(directory), automation, hashPrefix, startHistory, std::move(pathFilter));

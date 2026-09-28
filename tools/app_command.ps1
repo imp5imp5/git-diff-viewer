@@ -36,4 +36,12 @@ do {
     }
     Start-Sleep -Milliseconds 50
 } while([DateTime]::UtcNow -lt $deadline)
+$crash = Join-Path $root 'crash.txt'
+if(Test-Path -LiteralPath $crash) {
+    throw "Application crashed while waiting for '$Command': $([IO.File]::ReadAllText($crash))"
+}
+$errorFile = Join-Path $root 'error.txt'
+if(Test-Path -LiteralPath $errorFile) {
+    throw "Application failed while waiting for '$Command': $([IO.File]::ReadAllText($errorFile))"
+}
 throw "Timed out waiting for '$Command'. Check that the app is running with --automation-dir pointing to this directory."
