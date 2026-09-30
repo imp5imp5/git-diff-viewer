@@ -14,7 +14,6 @@ std::vector<PresentationRow> buildPresentation(const FileDiff &file, bool side)
     const auto &hunk = file.hunks[h];
     if (h > 0)
       rows.push_back({h, noLine, noLine, L"··· unchanged lines omitted ···"});
-    rows.push_back({h, noLine, noLine, hunk.header});
     const auto &lines = hunk.lines;
     for (size_t i = 0; i < lines.size();)
     {

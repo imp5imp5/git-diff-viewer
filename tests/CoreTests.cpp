@@ -27,20 +27,20 @@ try
     "unified change block");
   check(sideBlocks.size() == 1 && sideBlocks[0].last - sideBlocks[0].first == 1 && sideBlocks[0].added && sideBlocks[0].removed,
     "side-by-side change block");
-  check(u.size() == 7 && s.size() == 6, "alignment");
-  check(s[2].left == 1 && s[2].right == 2, "replacement");
-  check(s[3].left == noLine && s[3].right == 3, "filler");
-  check(correspondingRow(u, 3, s) == 2, "anchor");
+  check(u.size() == 6 && s.size() == 5, "alignment without hunk headers");
+  check(s[1].left == 1 && s[1].right == 2, "replacement");
+  check(s[2].left == noLine && s[2].right == 3, "filler");
+  check(correspondingRow(u, 2, s) == 1, "anchor");
   check(f.hunks[0].lines.size() == 6, "immutable");
-  check(s[1].left == s[1].right && s[1].left == 0, "context on both sides");
+  check(s[0].left == s[0].right && s[0].left == 0, "context on both sides");
   auto unequal = p.parse("diff --git a/a b/a\n@@ -1,3 +1 @@\n-one\n-two\n-three\n+replacement\n");
   auto unequalRows = buildPresentation(unequal.files[0], true);
-  check(unequalRows.size() == 4 && unequalRows[1].right == 3 && unequalRows[3].right == noLine,
+  check(unequalRows.size() == 3 && unequalRows[0].right == 3 && unequalRows[2].right == noLine,
     "N removals and M additions produce max(N,M) rows");
   auto newline = p.parse("diff --git a/a b/a\n@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n\\ No "
                          "newline at end of file\n");
   auto newlineRows = buildPresentation(newline.files[0], true);
-  check(newlineRows[1].left == 0 && newlineRows[1].right == 2, "no-newline markers do not break replacements");
+  check(newlineRows[0].left == 0 && newlineRows[0].right == 2, "no-newline markers do not break replacements");
   for (size_t i = 0; i < u.size(); ++i)
   {
     auto destination = correspondingRow(u, i, s);
@@ -66,7 +66,7 @@ try
   auto h = p.parse("diff --git a/a b/a\n@@ -1 +1 @@\n-a\n+b\n@@ -20 +30 @@\n-c\n+d\n");
   check(h.files[0].hunks[1].lines[1].newLine == 30, "hunks");
   auto separated = buildPresentation(h.files[0], false);
-  check(separated.size() == 7, "divider");
+  check(separated.size() == 5 && separated[2].left == noLine && separated[2].right == noLine, "divider without hunk headers");
   check(findChangeBlocks(h.files[0], separated).size() == 2, "separated change blocks");
   check(p.parse("diff --git a/a b/a\nold mode 100644\nnew mode 100755\n").files[0].metadata.size() == 2, "mode");
   check(p.parse("diff --git a/a b/b\ncopy from a\ncopy to b\n").files[0].status == FileStatus::Copied, "copy");
@@ -79,7 +79,7 @@ try
   for (int i = 0; i < 20000; ++i)
     large += "+row\n";
   auto big = p.parse(large);
-  check(buildPresentation(big.files[0], true).size() == 20001, "20k");
+  check(buildPresentation(big.files[0], true).size() == 20000, "20k");
   for (size_t i = 0; i < large.size(); i += 997)
     p.parse(std::string_view(large).substr(0, i));
   check(!fromUtf8("\xff").empty(), "invalid UTF8");

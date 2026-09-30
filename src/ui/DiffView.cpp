@@ -267,7 +267,7 @@ void DiffView::buildRows()
     bool leading = first.oldStart > 1 || first.newStart > 1;
     for (const auto &row : rows_)
     {
-      if (leading && row.hunk == 0 && row.left == noLine && row.right == noLine)
+      if (leading && row.hunk == 0)
       {
         PresentationRow omitted;
         omitted.gap = gap++;
@@ -367,42 +367,6 @@ void DiffView::buildRows()
     i = end;
   }
   rows_ = std::move(filtered);
-  for (const auto &hunk : compactFile_->hunks)
-  {
-    auto source =
-      std::find_if(hunk.lines.begin(), hunk.lines.end(), [](const DiffLine &line) { return line.type != DiffLineType::Meta; });
-    if (source == hunk.lines.end())
-      continue;
-    for (size_t i = 0; i < rows_.size(); ++i)
-    {
-      const auto &row = rows_[i];
-      if (row.hunk == noLine || row.hunk >= contextFile_->hunks.size())
-        continue;
-      const auto &lines = contextFile_->hunks[row.hunk].lines;
-      bool matches = false;
-      for (size_t index : {row.left, row.right})
-        if (index != noLine && index < lines.size())
-        {
-          const auto &line = lines[index];
-          matches |= (source->oldLine && line.oldLine == source->oldLine) || (source->newLine && line.newLine == source->newLine);
-        }
-      if (matches)
-      {
-        const DiffLine *previous = nullptr;
-        if (i > 0)
-        {
-          const auto &preceding = rows_[i - 1];
-          previous = line(preceding, preceding.right != noLine ? preceding.right : preceding.left);
-        }
-        bool adjacent = previous && previous->type == DiffLineType::Context &&
-                        (!source->oldLine || (previous->oldLine && *previous->oldLine + 1 == *source->oldLine)) &&
-                        (!source->newLine || (previous->newLine && *previous->newLine + 1 == *source->newLine));
-        if (!adjacent)
-          rows_.insert(rows_.begin() + i, PresentationRow{noLine, noLine, noLine, hunk.header});
-        break;
-      }
-    }
-  }
 }
 void DiffView::activateGap(size_t gap, int action, bool doubleClick)
 {
