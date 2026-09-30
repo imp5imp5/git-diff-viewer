@@ -143,18 +143,49 @@ CommitSearchPage GitRepository::searchCommits(const CommitSearchRequest &request
     return result.out;
   };
   CommitSearchPage page;
-  // Resolve the ref before passing it to log, and keep pagination on the same commit.
-  page.head =
-    trim(run({L"rev-parse", L"--verify", L"--end-of-options", (request.branch.empty() ? L"HEAD" : request.branch) + L"^{commit}"}));
+  // Keep pagination on the same branch tips, even if refs move during the search.
+  if (request.allBranches)
+  {
+    page.branches = request.branches;
+    if (page.branches.empty())
+    {
+      std::istringstream refs(
+        run({L"for-each-ref", L"--format=%(refname:short)%09%(objectname)%09%(symref)", L"refs/heads", L"refs/remotes"}));
+      std::string line;
+      while (std::getline(refs, line))
+      {
+        if (cancel)
+          throw std::runtime_error("Cancelled");
+        auto first = line.find('\t'), second = line.find('\t', first == std::string::npos ? 0 : first + 1);
+        if (first == std::string::npos || second == std::string::npos || !trim(line.substr(second + 1)).empty())
+          continue;
+        page.branches.push_back({fromUtf8(line.substr(0, first)), fromUtf8(line.substr(first + 1, second - first - 1))});
+      }
+    }
+    if (page.branches.empty())
+      return page;
+  }
+  else
+    page.head =
+      trim(run({L"rev-parse", L"--verify", L"--end-of-options", (request.branch.empty() ? L"HEAD" : request.branch) + L"^{commit}"}));
   size_t limit = std::clamp<size_t>(request.limit, 1, 1000);
-  std::vector<std::wstring> args{L"-c", L"log.follow=false", L"log", L"--encoding=UTF-8", L"--no-notes",
-    L"--format=%H%x00%s%x00%an <%ae>%x00%aI%x00%B%x00", L"--fixed-strings", L"--regexp-ignore-case", L"--full-history",
-    L"--skip=" + std::to_wstring(request.skip), L"-n" + std::to_wstring(limit + 1)};
+  std::vector<std::wstring> args{L"-c", L"log.follow=false", L"log", L"--encoding=UTF-8", L"--no-notes", L"--source",
+    L"--format=%H%x00%s%x00%an <%ae>%x00%aI%x00%B%x00%S%x00", L"--fixed-strings", L"--regexp-ignore-case", L"--full-history",
+    L"--topo-order", L"--skip=" + std::to_wstring(request.skip), L"-n" + std::to_wstring(limit + 1)};
   if (!request.message.empty())
     args.push_back(L"--grep=" + request.message);
   if (!request.author.empty())
     args.push_back(L"--author=" + request.author);
-  args.insert(args.end(), {page.head, L"--"});
+  if (request.allBranches)
+  {
+    std::unordered_set<std::wstring> heads;
+    for (const auto &branch : page.branches)
+      if (heads.insert(branch.head).second)
+        args.push_back(branch.head);
+  }
+  else
+    args.push_back(page.head);
+  args.push_back(L"--");
   if (!request.path.empty())
     args.push_back(request.path);
   auto output = run(args);
@@ -167,7 +198,7 @@ CommitSearchPage GitRepository::searchCommits(const CommitSearchRequest &request
       ++position;
     if (position == output.size())
       break;
-    std::wstring fields[5];
+    std::wstring fields[6];
     for (auto &field : fields)
     {
       size_t end = output.find('\0', position);
@@ -176,7 +207,15 @@ CommitSearchPage GitRepository::searchCommits(const CommitSearchRequest &request
       field = fromUtf8(std::string_view(output).substr(position, end - position));
       position = end + 1;
     }
-    page.matches.push_back({{fields[0], fields[1], fields[2], fields[4], request.branch}, fields[3]});
+    std::wstring branch = request.branch;
+    if (request.allBranches)
+    {
+      auto source = std::find_if(page.branches.begin(), page.branches.end(), [&](const auto &tip) { return tip.head == fields[5]; });
+      if (source == page.branches.end())
+        throw std::runtime_error("Unable to identify the commit's branch");
+      branch = source->name;
+    }
+    page.matches.push_back({{fields[0], fields[1], fields[2], fields[4], branch}, fields[3]});
   }
   page.hasMore = page.matches.size() > limit;
   if (page.hasMore)

@@ -98,6 +98,39 @@ try
           found.matches[0].commit.message.find(L"Search body [literal]") != std::wstring::npos &&
           found.matches[0].commit.author == L"Fixture <fixture@example.invalid>" && found.matches[0].date.size() >= 20,
     "commit search combines literal message, author email and path with full message and date");
+  {
+    auto all = search;
+    all.allBranches = true;
+    auto matches = repo.searchCommits(all, cancel);
+    check(matches.matches.size() == 1 && matches.matches[0].commit.branch == L"feature",
+      "all-branch search assigns a containing branch and combines filters");
+    all.message.clear();
+    all.author.clear();
+    all.path.clear();
+    run({L"update-ref", L"refs/remotes/origin/remote-only", L"feature"});
+    run({L"tag", L"tag-only", L"feature"});
+    auto first = repo.searchCommits(all, cancel);
+    check(first.matches.size() == 3, "all-branch search deduplicates shared history");
+    all.limit = 1;
+    first = repo.searchCommits(all, cancel);
+    all.branches = first.branches;
+    all.skip = 1;
+    run({L"update-ref", L"refs/heads/feature", L"main"});
+    auto second = repo.searchCommits(all, cancel);
+    check(second.matches.size() == 1 && second.matches[0].commit.subject == L"one" && second.matches[0].commit.branch == L"feature",
+      "all-branch pagination keeps the original tips and branch names after refs move");
+    all.skip = 0;
+    all.limit = 100;
+    all.branches.clear();
+    auto remote = repo.searchCommits(all, cancel);
+    check(remote.matches.size() == 3 &&
+            std::any_of(remote.matches.begin(), remote.matches.end(),
+              [](const auto &match) { return match.commit.subject == L"two" && match.commit.branch == L"origin/remote-only"; }),
+      "all-branch search includes commits reachable only from remote-tracking branches");
+    run({L"update-ref", L"refs/heads/feature", L"refs/remotes/origin/remote-only"});
+    run({L"update-ref", L"-d", L"refs/remotes/origin/remote-only"});
+    run({L"tag", L"-d", L"tag-only"});
+  }
   search.branch = L"main";
   check(repo.searchCommits(search, cancel).matches.empty(), "commit search stays within the selected branch");
   search.branch = L"feature";

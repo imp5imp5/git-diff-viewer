@@ -2578,10 +2578,7 @@ void MainWindow::searchCommits()
 {
   if (directory_.empty())
     return;
-  auto branch = selectedBranchRef_.empty() ? snapshot_.branch : selectedBranchRef_;
-  if (branch == L"Detached HEAD")
-    branch = L"HEAD";
-  auto selected = searchRepositoryCommits(hwnd_, instance_, directory_, branch, diff_.fontSize());
+  auto selected = searchRepositoryCommits(hwnd_, instance_, directory_, diff_.fontSize(), commitSearchState_);
   if (!selected)
     return;
   SendMessageW(source_, CB_SETCURSEL, static_cast<WPARAM>(ChangeSource::Commit), 0);

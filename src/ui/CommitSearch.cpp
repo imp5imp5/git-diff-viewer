@@ -14,6 +14,7 @@ namespace
 constexpr int findId = IDOK, cancelId = IDCANCEL, openId = 103, moreId = 104;
 constexpr int branchId = 110, messageId = 111, authorId = 112, pathId = 113, listId = 120, statusId = 121;
 constexpr UINT finished = WM_APP + 10;
+constexpr const wchar_t *allBranchesLabel = L"All branches";
 struct Search
 {
   HWND window{}, branch{}, message{}, author{}, path{}, list{}, status{}, find{}, open{}, more{}, tooltip{};
@@ -21,14 +22,16 @@ struct Search
   HBRUSH background{}, surface{};
   HFONT font{};
   int dpi{}, lineHeight{}, labelWidth{}, buttonWidth{}, hovered{-1};
-  bool dark{}, running{}, loadingRefs{}, hasMore{};
+  int lastSelected{-1};
+  bool dark{}, running{}, loadingRefs{}, hasMore{}, showBranches{true};
   std::atomic_bool cancel{false};
   std::thread worker;
   CommitSearchRequest request;
   CommitSearchPage page;
   std::vector<CommitSearchMatch> matches;
   std::vector<std::wstring> refs;
-  std::wstring error, tooltipText, resultBranch;
+  std::wstring error, tooltipText, resultBranch, restoredStatus;
+  CommitSearchState *state{};
   std::optional<Commit> result;
   int scale(int n) const { return MulDiv(n, dpi, 96); }
 };
@@ -46,6 +49,8 @@ std::wstring columnText(const CommitSearchMatch &match, int column)
     return match.commit.author;
   if (column == 2)
     return match.commit.subject;
+  if (column == 3)
+    return match.commit.branch;
   auto value = match.date.substr(0, 16);
   if (value.size() > 10)
     value[10] = L' ';
@@ -81,12 +86,55 @@ void layout(Search &search)
   int dateWidth = std::max(search.scale(150), search.lineHeight * 8);
   ListView_SetColumnWidth(search.list, 0, authorWidth);
   ListView_SetColumnWidth(search.list, 1, dateWidth);
-  ListView_SetColumnWidth(search.list, 2, std::max(search.scale(200), width - authorWidth - dateWidth - search.scale(20)));
+  int branchWidth = search.showBranches ? std::max(search.scale(170), width / 5) : 0;
+  ListView_SetColumnWidth(search.list, 2,
+    std::max(search.scale(200), width - authorWidth - dateWidth - branchWidth - search.scale(20)));
+  if (search.showBranches)
+    ListView_SetColumnWidth(search.list, 3, branchWidth);
+}
+void updateBranchColumn(Search &search)
+{
+  bool all = text(search.branch) == allBranchesLabel;
+  if (all == search.showBranches)
+    return;
+  search.showBranches = all;
+  if (all)
+  {
+    LVCOLUMNW column{};
+    column.mask = LVCF_TEXT | LVCF_WIDTH;
+    column.pszText = const_cast<wchar_t *>(L"Branch");
+    column.cx = search.scale(170);
+    ListView_InsertColumn(search.list, 3, &column);
+  }
+  else
+    ListView_DeleteColumn(search.list, 3);
+  layout(search);
+  InvalidateRect(search.list, nullptr, TRUE);
 }
 void updateSelection(Search &search)
 {
-  ShowWindow(search.open, ListView_GetNextItem(search.list, -1, LVNI_SELECTED) >= 0 ? SW_SHOW : SW_HIDE);
+  int selected = ListView_GetNextItem(search.list, -1, LVNI_SELECTED);
+  if (selected >= 0)
+    search.lastSelected = selected;
+  ShowWindow(search.open, selected >= 0 ? SW_SHOW : SW_HIDE);
   EnableWindow(search.open, !search.running);
+}
+void saveState(Search &search)
+{
+  if (!search.state || !search.list)
+    return;
+  auto &state = *search.state;
+  state.request = search.request;
+  state.branch = text(search.branch);
+  state.message = text(search.message);
+  state.author = text(search.author);
+  state.path = text(search.path);
+  state.resultBranch = search.resultBranch;
+  state.matches = search.matches;
+  state.selected = search.lastSelected;
+  state.topIndex = ListView_GetTopIndex(search.list);
+  state.hasMore = search.hasMore;
+  state.status = search.loadingRefs ? search.restoredStatus : search.running ? L"Search cancelled." : text(search.status);
 }
 void startSearch(Search &search, bool more)
 {
@@ -95,6 +143,10 @@ void startSearch(Search &search, bool more)
   if (!more)
   {
     search.request.branch = text(search.branch);
+    search.request.allBranches = search.request.branch == allBranchesLabel;
+    search.request.branches.clear();
+    if (search.request.allBranches)
+      search.request.branch.clear();
     if (search.request.branch.empty())
       search.request.branch = L"HEAD";
     search.resultBranch = search.request.branch;
@@ -106,6 +158,7 @@ void startSearch(Search &search, bool more)
     ShowWindow(search.more, SW_HIDE);
     SendMessageW(search.tooltip, TTM_POP, 0, 0);
     search.matches.clear();
+    search.lastSelected = -1;
     ListView_SetItemCount(search.list, 0);
   }
   else
@@ -140,8 +193,16 @@ void complete(Search &search)
     search.loadingRefs = false;
     for (const auto &ref : search.refs)
       SendMessageW(search.branch, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(ref.c_str()));
-    SetWindowTextW(search.status, search.error.empty() ? L"Enter filters and click Find." : search.error.c_str());
+    auto branch = text(search.branch);
+    auto selected = SendMessageW(search.branch, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(branch.c_str()));
+    if (selected != CB_ERR)
+      SendMessageW(search.branch, CB_SETCURSEL, selected, 0);
+    SetWindowTextW(search.status,
+      search.error.empty() ? (search.restoredStatus.empty() ? L"Enter filters and click Find." : search.restoredStatus.c_str())
+                           : search.error.c_str());
     EnableWindow(search.find, TRUE);
+    EnableWindow(search.more, search.hasMore);
+    updateSelection(search);
     return;
   }
   if (!search.error.empty())
@@ -152,11 +213,15 @@ void complete(Search &search)
     EnableWindow(search.find, TRUE);
     return;
   }
-  search.request.branch = search.page.head;
+  if (search.request.allBranches)
+    search.request.branches = search.page.branches;
+  else
+    search.request.branch = search.page.head;
   search.hasMore = search.page.hasMore;
   for (auto &match : search.page.matches)
   {
-    match.commit.branch = search.resultBranch;
+    if (!search.request.allBranches)
+      match.commit.branch = search.resultBranch;
     search.matches.push_back(std::move(match));
   }
   ListView_SetItemCount(search.list, static_cast<int>(search.matches.size()));
@@ -333,6 +398,22 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l)
     case WM_COMMAND:
       switch (LOWORD(w))
       {
+        case branchId:
+          if (HIWORD(w) == CBN_SELCHANGE)
+          {
+            // The edit text is updated after CBN_SELCHANGE returns.
+            auto selected = SendMessageW(search->branch, CB_GETCURSEL, 0, 0);
+            if (selected >= 0)
+            {
+              int length = static_cast<int>(SendMessageW(search->branch, CB_GETLBTEXTLEN, selected, 0));
+              std::wstring value(static_cast<size_t>(length) + 1, L'\0');
+              SendMessageW(search->branch, CB_GETLBTEXT, selected, reinterpret_cast<LPARAM>(value.data()));
+              SetWindowTextW(search->branch, value.c_str());
+            }
+          }
+          if (HIWORD(w) == CBN_SELCHANGE || HIWORD(w) == CBN_EDITCHANGE)
+            updateBranchColumn(*search);
+          return 0;
         case findId: startSearch(*search, false); return 0;
         case moreId: startSearch(*search, true); return 0;
         case openId: openSelected(*search); return 0;
@@ -346,6 +427,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l)
       search->cancel = true;
       DestroyWindow(window);
       return 0;
+    case WM_DESTROY: saveState(*search); return 0;
     case WM_NOTIFY:
     {
       auto header = reinterpret_cast<NMHDR *>(l);
@@ -392,7 +474,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l)
             auto oldFont = SelectObject(draw->nmcd.hdc, search->font);
             SetBkMode(draw->nmcd.hdc, TRANSPARENT);
             SetTextColor(draw->nmcd.hdc, themeColor(selected ? ThemeColor::SelectionText : ThemeColor::Text));
-            for (int column = 0; column < 3; ++column)
+            for (int column = 0; column < (search->showBranches ? 4 : 3); ++column)
             {
               auto value = columnText(search->matches[static_cast<size_t>(index)], column);
               RECT cell{};
@@ -441,8 +523,8 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l)
   return DefWindowProcW(window, message, w, l);
 }
 } // namespace
-std::optional<Commit> searchRepositoryCommits(HWND owner, HINSTANCE instance, const std::wstring &directory,
-  const std::wstring &branch, int fontPoints)
+std::optional<Commit> searchRepositoryCommits(HWND owner, HINSTANCE instance, const std::wstring &directory, int fontPoints,
+  CommitSearchState &state)
 {
   static bool registered = false;
   if (!registered)
@@ -455,6 +537,15 @@ std::optional<Commit> searchRepositoryCommits(HWND owner, HINSTANCE instance, co
     registered = RegisterClassW(&cls) != 0;
   }
   Search search;
+  if (state.request.directory != directory)
+    state = {};
+  search.state = &state;
+  search.request = state.request;
+  search.matches = state.matches;
+  search.resultBranch = state.resultBranch;
+  search.hasMore = state.hasMore;
+  search.lastSelected = state.selected;
+  search.restoredStatus = state.status;
   search.request.directory = directory;
   search.dark = darkTheme;
   search.dpi = static_cast<int>(GetDpiForWindow(owner));
@@ -509,12 +600,17 @@ std::optional<Commit> searchRepositoryCommits(HWND owner, HINSTANCE instance, co
     installThemedCombo(search.branch);
     SendMessageW(search.branch, CB_SETITEMHEIGHT, 0, search.lineHeight + search.scale(8));
     SendMessageW(search.branch, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), search.lineHeight + search.scale(4));
+    SendMessageW(search.branch, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(allBranchesLabel));
     SendMessageW(search.branch, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"HEAD"));
     SendMessageW(search.branch, CB_SETMINVISIBLE, 8, 0);
-    SetWindowTextW(search.branch, branch.empty() ? L"HEAD" : branch.c_str());
+    SendMessageW(search.branch, CB_SETCURSEL, 0, 0);
     search.message = create(L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, messageId);
     search.author = create(L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, authorId);
     search.path = create(L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, pathId);
+    SetWindowTextW(search.branch, state.branch.c_str());
+    SetWindowTextW(search.message, state.message.c_str());
+    SetWindowTextW(search.author, state.author.c_str());
+    SetWindowTextW(search.path, state.path.c_str());
     SendMessageW(search.path, EM_SETCUEBANNER, 0, reinterpret_cast<LPARAM>(L"Relative path, folder or mask (e.g. *.cpp)"));
     SendMessageW(search.author, EM_SETCUEBANNER, 0, reinterpret_cast<LPARAM>(L"Name or email"));
     search.status = create(L"STATIC", L"Loading branches...", SS_NOPREFIX, statusId);
@@ -525,8 +621,8 @@ std::optional<Commit> searchRepositoryCommits(HWND owner, HINSTANCE instance, co
     ListView_SetTextBkColor(search.list, themeColor(ThemeColor::Surface));
     ListView_SetTextColor(search.list, themeColor(ThemeColor::Text));
     SetWindowSubclass(search.list, listProcedure, 1, reinterpret_cast<DWORD_PTR>(&search));
-    const wchar_t *columns[] = {L"Author", L"Date", L"Commit message"};
-    for (int i = 0; i < 3; ++i)
+    const wchar_t *columns[] = {L"Author", L"Date", L"Commit message", L"Branch"};
+    for (int i = 0; i < 4; ++i)
     {
       LVCOLUMNW column{};
       column.mask = LVCF_TEXT | LVCF_WIDTH;
@@ -555,8 +651,27 @@ std::optional<Commit> searchRepositoryCommits(HWND owner, HINSTANCE instance, co
     ShowWindow(search.open, SW_HIDE);
     ShowWindow(search.more, SW_HIDE);
     EnableWindow(search.find, FALSE);
+    updateBranchColumn(search);
     layout(search);
     search.running = search.loadingRefs = true;
+    ListView_SetItemCount(search.list, static_cast<int>(search.matches.size()));
+    if (!search.matches.empty())
+    {
+      RECT row{};
+      ListView_GetItemRect(search.list, 0, &row, LVIR_BOUNDS);
+      int top = std::clamp(state.topIndex, 0, static_cast<int>(search.matches.size()) - 1);
+      ListView_Scroll(search.list, 0, (top - ListView_GetTopIndex(search.list)) * (row.bottom - row.top));
+      if (state.selected >= 0 && static_cast<size_t>(state.selected) < search.matches.size())
+      {
+        ListView_SetItemState(search.list, state.selected, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(search.list, state.selected, FALSE);
+      }
+    }
+    ShowWindow(search.more, search.hasMore ? SW_SHOW : SW_HIDE);
+    EnableWindow(search.more, FALSE);
+    updateSelection(search);
+    if (!search.restoredStatus.empty())
+      SetWindowTextW(search.status, search.restoredStatus.c_str());
     search.worker = std::thread([&search] {
       try
       {

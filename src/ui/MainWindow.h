@@ -1,5 +1,6 @@
 #pragma once
 #include "DiffView.h"
+#include "CommitSearch.h"
 #include "Settings.h"
 #include "app/RepositoryController.h"
 #include <commctrl.h>
@@ -109,6 +110,7 @@ private:
   void find();
   void findNext(int direction);
   void searchCommits();
+  CommitSearchState commitSearchState_;
   void saveSettings();
   void applyTheme();
   void startStatusAnimation();

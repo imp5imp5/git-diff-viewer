@@ -35,14 +35,15 @@ struct Dialog
 {
   HWND window{};
   std::optional<Commit> result;
+  CommitSearchState localState;
   std::thread thread;
-  Dialog(const fs::path &directory, int points)
+  Dialog(const fs::path &directory, int points, CommitSearchState *state = nullptr)
   {
-    thread = std::thread([&, directory, points] {
+    thread = std::thread([&, directory, points, state] {
       HINSTANCE instance = GetModuleHandleW(nullptr);
       HWND owner =
         CreateWindowExW(0, L"STATIC", L"Search owner", WS_OVERLAPPEDWINDOW, 100, 100, 1000, 700, nullptr, nullptr, instance, nullptr);
-      result = searchRepositoryCommits(owner, instance, directory.wstring(), L"main", points);
+      result = searchRepositoryCommits(owner, instance, directory.wstring(), points, state ? *state : localState);
       DestroyWindow(owner);
     });
     try
@@ -94,6 +95,12 @@ int fakeGit(int argc, wchar_t **argv)
   {
     if (std::wstring(argv[i]) == L"for-each-ref")
     {
+      for (int j = i + 1; j < argc; ++j)
+        if (std::wstring(argv[j]).find(L"%(objectname)") != std::wstring::npos)
+        {
+          std::cout << "main\t" << std::string(40, 'a') << "\t\nfeature\t" << std::string(40, 'b') << "\t\n";
+          return 0;
+        }
       std::cout << "main\nfeature\n";
       return 0;
     }
@@ -124,7 +131,7 @@ int fakeGit(int argc, wchar_t **argv)
         std::cout << std::setfill('0') << std::setw(40) << row << '\0' << "Subject " << row << '\0'
                   << "Test Author <test@example.invalid>" << '\0' << "2026-09-30T12:34:56+03:00" << '\0' << "Subject " << row
                   << "\n\nFull commit body with details.\n"
-                  << '\0' << '\n';
+                  << '\0' << std::string(40, row % 2 ? 'b' : 'a') << '\0' << '\n';
       }
       return 0;
     }
@@ -164,7 +171,11 @@ try
     darkTheme = dark;
     Dialog dialog(directory, dark ? 11 : 18);
     HWND list = GetDlgItem(dialog.window, 120);
-    check(Header_GetItemCount(ListView_GetHeader(list)) == 3, "search table has author, date and message columns");
+    wchar_t branch[100]{};
+    GetWindowTextW(GetDlgItem(dialog.window, 110), branch, 100);
+    check(std::wstring(branch) == L"All branches" && SendMessageW(GetDlgItem(dialog.window, 110), CB_GETCURSEL, 0, 0) == 0,
+      "All branches is first and selected by default");
+    check(Header_GetItemCount(ListView_GetHeader(list)) == 4, "all-branch search also has a branch column");
     check(!IsWindowVisible(GetDlgItem(dialog.window, 103)), "open commit button is hidden without selection");
     LOGFONTW font{};
     GetObjectW(reinterpret_cast<HFONT>(SendMessageW(list, WM_GETFONT, 0, 0)), sizeof(font), &font);
@@ -175,7 +186,7 @@ try
     dialog.idle();
     check(ListView_GetItemCount(list) == 100 && IsWindowVisible(GetDlgItem(dialog.window, 104)), "search results are paginated");
     check(dialog.cell(0, 0) == L"Test Author <test@example.invalid>" && dialog.cell(0, 1) == L"2026-09-30 12:34" &&
-            dialog.cell(0, 2) == L"Subject 0",
+            dialog.cell(0, 2) == L"Subject 0" && dialog.cell(0, 3) == L"main" && dialog.cell(1, 3) == L"feature",
       "search table displays commit details");
     dialog.click(104);
     dialog.idle();
@@ -214,8 +225,95 @@ try
       SendMessageW(dialog.window, WM_NOTIFY, 120, reinterpret_cast<LPARAM>(&activation));
     }
     dialog.thread.join();
-    check(dialog.result && dialog.result->subject == L"Subject 1" && dialog.result->branch == L"main",
-      "button and double click return the selected commit");
+    check(dialog.result && dialog.result->subject == L"Subject 1" && dialog.result->branch == L"feature",
+      "button and double click return the selected commit with its branch");
+  }
+  {
+    Dialog dialog(directory, 11);
+    HWND branch = GetDlgItem(dialog.window, 110), list = GetDlgItem(dialog.window, 120);
+    SendMessageW(branch, CB_SETCURSEL, 3, 0); // All branches, HEAD, feature, main
+    SendMessageW(dialog.window, WM_COMMAND, MAKEWPARAM(110, CBN_SELCHANGE), reinterpret_cast<LPARAM>(branch));
+    check(Header_GetItemCount(ListView_GetHeader(list)) == 3, "choosing a single branch removes the branch column");
+    dialog.click(IDOK);
+    dialog.idle();
+    ListView_SetItemState(list, 1, LVIS_SELECTED, LVIS_SELECTED);
+    dialog.click(103);
+    dialog.thread.join();
+    check(dialog.result && dialog.result->branch == L"main", "single-branch results preserve the selected branch");
+  }
+  {
+    Dialog dialog(directory, 11);
+    HWND branch = GetDlgItem(dialog.window, 110), list = GetDlgItem(dialog.window, 120);
+    SetWindowTextW(branch, L"HEAD");
+    SendMessageW(dialog.window, WM_COMMAND, MAKEWPARAM(110, CBN_EDITCHANGE), reinterpret_cast<LPARAM>(branch));
+    SendMessageW(branch, CB_SETCURSEL, 0, 0);
+    SendMessageW(dialog.window, WM_COMMAND, MAKEWPARAM(110, CBN_SELCHANGE), reinterpret_cast<LPARAM>(branch));
+    check(Header_GetItemCount(ListView_GetHeader(list)) == 4, "choosing All branches restores the branch column");
+  }
+  CommitSearchState saved;
+  {
+    Dialog dialog(directory, 11, &saved);
+    SetWindowTextW(GetDlgItem(dialog.window, 111), L"searched message");
+    SetWindowTextW(GetDlgItem(dialog.window, 112), L"searched author");
+    SetWindowTextW(GetDlgItem(dialog.window, 113), L"*.cpp");
+    dialog.click(IDOK);
+    dialog.idle();
+    HWND list = GetDlgItem(dialog.window, 120);
+    ListView_SetItemState(list, 90, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_EnsureVisible(list, 90, FALSE);
+    SetWindowTextW(GetDlgItem(dialog.window, 111), L"edited message");
+    dialog.click(IDCANCEL);
+    dialog.thread.join();
+    check(saved.matches.size() == 100 && saved.selected == 90 && saved.hasMore, "closing saves results, selection and pagination");
+  }
+  // Reopening must restore cached results without invoking Git log.
+  std::ofstream(directory / L"slow") << "slow";
+  {
+    Dialog dialog(directory, 18, &saved);
+    HWND list = GetDlgItem(dialog.window, 120);
+    wchar_t value[100]{};
+    GetWindowTextW(GetDlgItem(dialog.window, 111), value, 100);
+    check(std::wstring(value) == L"edited message" && saved.request.message == L"searched message",
+      "edited filters and the executed search are preserved separately");
+    GetWindowTextW(GetDlgItem(dialog.window, 112), value, 100);
+    check(std::wstring(value) == L"searched author", "author filter is restored");
+    GetWindowTextW(GetDlgItem(dialog.window, 113), value, 100);
+    check(std::wstring(value) == L"*.cpp", "path filter is restored");
+    check(ListView_GetItemCount(list) == 100 && ListView_GetNextItem(list, -1, LVNI_SELECTED) == 90 &&
+            IsWindowVisible(GetDlgItem(dialog.window, 103)) && IsWindowVisible(GetDlgItem(dialog.window, 104)),
+      "reopening restores results, selected row and action buttons without rerunning the search");
+    check(ListView_GetTopIndex(list) <= 90 && ListView_GetTopIndex(list) + ListView_GetCountPerPage(list) >= 90,
+      "the restored selected commit is visible");
+    fs::remove(directory / L"slow");
+    dialog.click(104);
+    dialog.idle();
+    check(ListView_GetItemCount(list) == 101, "restored search can load the next page");
+    ListView_SetItemState(list, 100, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    dialog.click(103);
+    dialog.thread.join();
+    check(dialog.result && dialog.result->subject == L"Subject 100", "opening a cached result returns the selected commit");
+  }
+  {
+    Dialog dialog(directory, 11, &saved);
+    HWND list = GetDlgItem(dialog.window, 120);
+    check(ListView_GetItemCount(list) == 101 && ListView_GetNextItem(list, -1, LVNI_SELECTED) == 100,
+      "returning after opening a commit restores its selection and all loaded pages");
+    HWND branch = GetDlgItem(dialog.window, 110);
+    SetWindowTextW(branch, L"main");
+    SendMessageW(dialog.window, WM_COMMAND, MAKEWPARAM(110, CBN_EDITCHANGE), reinterpret_cast<LPARAM>(branch));
+  }
+  {
+    Dialog dialog(directory, 11, &saved);
+    check(Header_GetItemCount(ListView_GetHeader(GetDlgItem(dialog.window, 120))) == 3 &&
+            SendMessageW(GetDlgItem(dialog.window, 110), CB_GETCURSEL, 0, 0) == 3,
+      "reopening restores the branch filter and corresponding columns");
+  }
+  {
+    auto other = directory / L"other";
+    fs::create_directory(other);
+    Dialog dialog(other, 11, &saved);
+    check(ListView_GetItemCount(GetDlgItem(dialog.window, 120)) == 0 && saved.matches.empty(),
+      "changing repositories resets cached search state");
   }
   std::ofstream(directory / L"slow") << "slow";
   for (bool close : {false, true})

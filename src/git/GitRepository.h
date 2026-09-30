@@ -39,10 +39,16 @@ struct Commit
 {
   std::wstring id, subject, author, message, branch;
 };
+struct CommitSearchBranch
+{
+  std::wstring name, head;
+};
 struct CommitSearchRequest
 {
   std::wstring directory, branch{L"HEAD"}, message, author, path;
   size_t skip{}, limit{100};
+  bool allBranches{};
+  std::vector<CommitSearchBranch> branches;
 };
 struct CommitSearchMatch
 {
@@ -53,6 +59,7 @@ struct CommitSearchPage
 {
   std::vector<CommitSearchMatch> matches;
   std::wstring head;
+  std::vector<CommitSearchBranch> branches;
   bool hasMore{};
 };
 struct HistorySnapshot
