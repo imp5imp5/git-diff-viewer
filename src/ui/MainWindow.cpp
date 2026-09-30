@@ -8,6 +8,7 @@
 #include "Screenshot.h"
 #include "Theme.h"
 #include "ThemedCombo.h"
+#include "HelpDialog.h"
 #include <uxtheme.h>
 #include <dwmapi.h>
 #include <filesystem>
@@ -57,12 +58,6 @@ enum
 constexpr int minFilePaneWidth = 220;
 constexpr int minDiffPaneWidth = 300;
 constexpr UINT_PTR automationTimer = 1;
-HRESULT CALLBACK aboutCallback(HWND window, UINT notification, WPARAM, LPARAM value, LONG_PTR)
-{
-  if (notification == TDN_HYPERLINK_CLICKED)
-    ShellExecuteW(window, L"open", reinterpret_cast<const wchar_t *>(value), nullptr, nullptr, SW_SHOWNORMAL);
-  return S_OK;
-}
 constexpr UINT_PTR statusAnimationTimer = 2;
 constexpr UINT_PTR explorerResizeTimer = 3;
 std::wstring getText(HWND h)
@@ -1882,48 +1877,7 @@ void MainWindow::toggleCommentsView()
   }
   updateStatus();
 }
-void MainWindow::showAbout()
-{
-  TASKDIALOGCONFIG dialog{sizeof(dialog)};
-  dialog.hwndParent = hwnd_;
-  dialog.pszWindowTitle = L"GitDiffViewer Help";
-  dialog.pszMainInstruction = L"Keyboard shortcuts";
-  dialog.pszContent = L"Search\n"
-                      L"Ctrl+D — Search repository commits\n"
-                      L"Ctrl+F / F7 — Find text in the current diff\n"
-                      L"F3 / Shift+F7 — Next match; Shift+F3 — Previous match\n"
-                      L"Esc — Clear diff search or close a dialog\n\n"
-                      L"View\n"
-                      L"F5 / Ctrl+R — Refresh Git data\n"
-                      L"Ctrl+Shift+D — Toggle unified / side-by-side diff\n"
-                      L"F — Toggle full file (outside text fields and dropdowns)\n"
-                      L"Ctrl+- / Ctrl+= — Change diff font size\n\n"
-                      L"Navigation\n"
-                      L"Ctrl+Up / Ctrl+Down — Previous / next list item\n"
-                      L"Ctrl+PgUp / Ctrl+PgDn — Previous / next change or comment\n"
-                      L"Space — Toggle commit message (diff, files, closed commit dropdown)\n"
-                      L"Enter / Space — Load more when the paging item is focused\n"
-                      L"Arrows / PgUp / PgDn / Home / End — Navigate the diff\n\n"
-                      L"Selection and comments\n"
-                      L"Ctrl+A — Select all in the diff or commit message\n"
-                      L"Ctrl+C — Copy selected diff rows\n"
-                      L"C — Add or edit a comment for selected After lines\n"
-                      L"Ctrl+K — Toggle the current commit's comments view\n"
-                      L"F2 — Copy all review comments\n"
-                      L"Ctrl+Enter — Save in the comment editor\n"
-                      L"Ctrl+Backspace — Delete the previous word in the comment editor\n\n"
-                      L"Ctrl+Shift+S — Save an application screenshot\n"
-                      L"F1 — Open this help";
-  dialog.pszExpandedInformation = L"GitDiffViewer — Version 7\n\nAuthor: Aleksei Borisov\n2026\nLicensed under the MIT License\n\n"
-                                  L"<a href=\"https://github.com/imp5imp5/git-diff-viewer\">github.com/imp5imp5/git-diff-viewer</a>";
-  dialog.pszCollapsedControlText = L"About GitDiffViewer";
-  dialog.pszExpandedControlText = L"Hide program information";
-  dialog.dwFlags = TDF_ENABLE_HYPERLINKS | TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
-  dialog.dwCommonButtons = TDCBF_OK_BUTTON;
-  dialog.pfCallback = aboutCallback;
-  dialog.cxWidth = 430;
-  TaskDialogIndirect(&dialog, nullptr, nullptr, nullptr);
-}
+void MainWindow::showAbout() { showHelp(hwnd_, instance_, font_); }
 void MainWindow::openCommentEditor()
 {
   if (commentsView_)
@@ -2137,8 +2091,9 @@ void MainWindow::updateStatus()
   if (!snapshot_.notice.empty())
     status += L"    " + snapshot_.notice;
   else
-    status += L"    |    F5 Refresh | F Full file | Ctrl+PgUp/PgDn Change | Ctrl+Down/Up List | Space Commit message | Ctrl+Shift+D "
-              L"View | C Comment | Ctrl+K Comments | F2 Copy comments | Ctrl+C Copy";
+    status +=
+      L"    |    F1 Help | F5 Refresh | F Full file | Ctrl+PgUp/PgDn Change | Ctrl+Down/Up List | Space Commit message | Ctrl+Shift+D "
+      L"View | C Comment | Ctrl+K Comments | F2 Copy comments | Ctrl+C Copy";
   SetWindowTextW(status_, status.c_str());
 }
 void MainWindow::rememberFileScroll()

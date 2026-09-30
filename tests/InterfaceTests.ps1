@@ -46,6 +46,7 @@ try {
     Check (@($state.controls | Where-Object {$_.id -eq 'open'}).Count -eq 0) 'No Open button'
     $hints = $state.controls | Where-Object {$_.id -eq 'status'}
     Check ($hints.visible -and $hints.height -gt 0 -and $hints.y + $hints.height -le $state.height) 'Shortcut hints are visible inside the window'
+    Check ($hints.text.Contains('F1 Help')) 'Help shortcut is documented in the footer'
     Check ($hints.text.Contains('Ctrl+Down/Up') -and $hints.text.Contains('Space Commit message')) 'File and commit message shortcuts are documented in the footer'
     foreach($id in @('refresh','view','full-file','theme','layout','copy-comments','compare')) {
         $button=@($state.controls | Where-Object {$_.id -eq $id})[0]
