@@ -1,7 +1,7 @@
 #include "CommentEditor.h"
 #include "Theme.h"
+#include <algorithm>
 #include <commctrl.h>
-#include <cstdlib>
 #include <cwctype>
 #include <dwmapi.h>
 #include <uxtheme.h>
@@ -74,7 +74,9 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l)
           SetTextColor(draw->hdc, editor->textColor);
           wchar_t label[80]{};
           GetWindowTextW(header->hwndFrom, label, 80);
+          auto oldFont = SelectObject(draw->hdc, editor->editFont);
           DrawTextW(draw->hdc, label, -1, &draw->rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+          SelectObject(draw->hdc, oldFont);
           if (draw->uItemState & CDIS_FOCUS)
           {
             RECT focus = draw->rc;
@@ -120,7 +122,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l)
   return DefWindowProcW(window, message, w, l);
 }
 } // namespace
-CommentEditResult editReviewComment(HWND owner, HINSTANCE instance, const std::wstring *existing)
+CommentEditResult editReviewComment(HWND owner, HINSTANCE instance, const std::wstring *existing, int fontPoints)
 {
   static bool registered = false;
   if (!registered)
@@ -145,11 +147,30 @@ CommentEditResult editReviewComment(HWND owner, HINSTANCE instance, const std::w
   int dpi = static_cast<int>(GetDpiForWindow(owner));
   LOGFONTW fontDescription{};
   GetObjectW(GetStockObject(DEFAULT_GUI_FONT), sizeof(fontDescription), &fontDescription);
-  int normalHeight = MulDiv(std::abs(fontDescription.lfHeight), dpi, static_cast<int>(GetDpiForSystem()));
-  fontDescription.lfHeight = -(normalHeight * 110 + 50) / 100;
+  fontDescription.lfHeight = -MulDiv(fontPoints, dpi, 72);
   editor.editFont = CreateFontIndirectW(&fontDescription);
   auto scale = [&](int n) { return MulDiv(n, dpi, 96); };
-  int width = scale(560), height = scale(330);
+  int pad = scale(16), gap = scale(8);
+  HDC dc = GetDC(owner);
+  auto oldFont = SelectObject(dc, editor.editFont);
+  TEXTMETRICW metrics{};
+  GetTextMetricsW(dc, &metrics);
+  SIZE buttonText{};
+  GetTextExtentPoint32W(dc, L"Cancel", 6, &buttonText);
+  int buttonWidth = std::max<LONG>(scale(90), buttonText.cx + 2 * pad);
+  int buttonHeight = std::max<LONG>(scale(30), metrics.tmHeight + gap);
+  int width = std::max(scale(560), 3 * buttonWidth + 2 * gap + 2 * pad);
+  constexpr auto label = L"Comment for selected After lines:";
+  RECT labelRect{0, 0, width - 2 * pad, 0};
+  DrawTextW(dc, label, -1, &labelRect, DT_CALCRECT | DT_WORDBREAK);
+  int labelHeight = labelRect.bottom;
+  SelectObject(dc, oldFont);
+  ReleaseDC(owner, dc);
+  RECT windowRect{0, 0, width, std::max<LONG>(scale(290), 3 * pad + labelHeight + gap + 6 * metrics.tmHeight + buttonHeight)};
+  AdjustWindowRectExForDpi(&windowRect, WS_POPUP | WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+    static_cast<UINT>(dpi));
+  width = windowRect.right - windowRect.left;
+  int height = windowRect.bottom - windowRect.top;
   RECT ownerRect{};
   GetWindowRect(owner, &ownerRect);
   int x = (ownerRect.left + ownerRect.right - width) / 2;
@@ -173,20 +194,19 @@ CommentEditResult editReviewComment(HWND owner, HINSTANCE instance, const std::w
   DwmSetWindowAttribute(dialog, 36, &captionText, sizeof(captionText));
   RECT client{};
   GetClientRect(dialog, &client);
-  int pad = scale(16), buttonWidth = scale(90), buttonHeight = scale(30), bottom = client.bottom - pad - buttonHeight;
+  int bottom = client.bottom - pad - buttonHeight;
   auto create = [&](const wchar_t *type, const wchar_t *label, DWORD style, int id, int left, int top, int w, int h) {
     HWND control = CreateWindowExW(0, type, label, WS_CHILD | WS_VISIBLE | style, left, top, w, h, dialog,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
-    SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+    SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(editor.editFont), TRUE);
     SetWindowTheme(control, editor.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
     return control;
   };
-  create(L"STATIC", L"Comment for selected After lines:", 0, 0, pad, pad, client.right - 2 * pad, scale(22));
+  create(L"STATIC", label, 0, 0, pad, pad, client.right - 2 * pad, labelHeight);
+  int editTop = pad + labelHeight + gap;
   editor.edit = create(L"EDIT", existing ? existing->c_str() : L"",
-    WS_TABSTOP | WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL, textId, pad, pad + scale(28),
-    client.right - 2 * pad, bottom - pad - scale(38));
-  if (editor.editFont)
-    SendMessageW(editor.edit, WM_SETFONT, reinterpret_cast<WPARAM>(editor.editFont), TRUE);
+    WS_TABSTOP | WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL, textId, pad, editTop, client.right - 2 * pad,
+    bottom - gap - editTop);
   if (existing)
     create(L"BUTTON", L"Delete", WS_TABSTOP, deleteId, pad, bottom, buttonWidth, buttonHeight);
   create(L"BUTTON", L"Cancel", WS_TABSTOP, cancelId, client.right - pad - buttonWidth * 2 - scale(8), bottom, buttonWidth,
@@ -209,8 +229,8 @@ CommentEditResult editReviewComment(HWND owner, HINSTANCE instance, const std::w
     if (
       message.message == WM_KEYDOWN && message.wParam == VK_RETURN && (GetKeyState(VK_CONTROL) & 0x8000) && GetFocus() == editor.edit)
       SendMessageW(dialog, WM_COMMAND, saveId, 0);
-    else if (message.message == WM_KEYDOWN && message.wParam == VK_BACK && (GetKeyState(VK_CONTROL) & 0x8000) &&
-             GetFocus() == editor.edit)
+    else if (
+      message.message == WM_KEYDOWN && message.wParam == VK_BACK && (GetKeyState(VK_CONTROL) & 0x8000) && GetFocus() == editor.edit)
     {
       DWORD start{}, end{};
       SendMessageW(editor.edit, EM_GETSEL, reinterpret_cast<WPARAM>(&start), reinterpret_cast<LPARAM>(&end));

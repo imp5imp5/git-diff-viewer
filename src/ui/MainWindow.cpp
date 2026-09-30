@@ -1899,7 +1899,7 @@ void MainWindow::openCommentEditor()
     if (selected < 0 || static_cast<size_t>(selected) >= commentsViewIndexes_.size())
       return;
     size_t existing = commentsViewIndexes_[static_cast<size_t>(selected)];
-    auto edit = editReviewComment(hwnd_, instance_, &comments_[existing].text);
+    auto edit = editReviewComment(hwnd_, instance_, &comments_[existing].text, diff_.fontSize());
     if (edit.action == CommentEditAction::Cancel)
       return;
     if (edit.action == CommentEditAction::Delete)
@@ -1948,7 +1948,7 @@ void MainWindow::openCommentEditor()
   if (existing == comments_.size() && !selected)
     return;
   const std::wstring *oldText = existing < comments_.size() ? &comments_[existing].text : nullptr;
-  auto edit = editReviewComment(hwnd_, instance_, oldText);
+  auto edit = editReviewComment(hwnd_, instance_, oldText, diff_.fontSize());
   if (edit.action == CommentEditAction::Cancel)
     return;
   if (edit.action == CommentEditAction::Delete)
@@ -2629,7 +2629,8 @@ void MainWindow::findNext(int direction)
   if (diff_.findNext(direction))
   {
     SetFocus(diff_.handle());
-    SetWindowTextW(status_, (L"Found " + std::to_wstring(diff_.searchResultCount()) + L" matching lines").c_str());
+    SetWindowTextW(status_,
+      (L"Found " + std::to_wstring(diff_.searchResultCount()) + L" matching lines | Next: F3 / Shift+F7").c_str());
   }
   else
   {

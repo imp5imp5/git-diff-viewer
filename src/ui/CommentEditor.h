@@ -14,5 +14,5 @@ struct CommentEditResult
   CommentEditAction action{CommentEditAction::Cancel};
   std::wstring text;
 };
-CommentEditResult editReviewComment(HWND owner, HINSTANCE instance, const std::wstring *existing);
+CommentEditResult editReviewComment(HWND owner, HINSTANCE instance, const std::wstring *existing, int fontPoints);
 } // namespace gdv

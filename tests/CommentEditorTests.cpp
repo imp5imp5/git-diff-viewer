@@ -37,7 +37,7 @@ HWND button(HWND editor, const wchar_t *name)
   }
   return nullptr;
 }
-CommentEditResult run(const std::wstring *existing, const wchar_t *action, const wchar_t *text = nullptr)
+CommentEditResult run(const std::wstring *existing, const wchar_t *action, const wchar_t *text = nullptr, int fontPoints = 11)
 {
   CommentEditResult result;
   std::atomic<DWORD> workerId{};
@@ -46,7 +46,7 @@ CommentEditResult run(const std::wstring *existing, const wchar_t *action, const
     HINSTANCE instance = GetModuleHandleW(nullptr);
     HWND owner =
       CreateWindowExW(0, L"STATIC", L"Comment owner", WS_OVERLAPPEDWINDOW, 100, 100, 700, 500, nullptr, nullptr, instance, nullptr);
-    result = editReviewComment(owner, instance, existing);
+    result = editReviewComment(owner, instance, existing, fontPoints);
     DestroyWindow(owner);
   });
   HWND editor = waitForEditor();
@@ -63,13 +63,22 @@ CommentEditResult run(const std::wstring *existing, const wchar_t *action, const
     validationError = "comment text field";
   else
   {
-    LOGFONTW actual{}, normal{};
+    LOGFONTW actual{};
     GetObjectW(reinterpret_cast<HFONT>(SendMessageW(edit, WM_GETFONT, 0, 0)), sizeof(actual), &actual);
-    GetObjectW(GetStockObject(DEFAULT_GUI_FONT), sizeof(normal), &normal);
-    int normalHeight =
-      MulDiv(std::abs(normal.lfHeight), static_cast<int>(GetDpiForWindow(editor)), static_cast<int>(GetDpiForSystem()));
-    if (std::abs(actual.lfHeight) != (normalHeight * 110 + 50) / 100)
-      validationError = "comment edit font is 10 percent larger";
+    if (actual.lfHeight != -MulDiv(fontPoints, static_cast<int>(GetDpiForWindow(editor)), 72))
+      validationError = "comment edit font matches the parent diff size";
+    for (HWND control = GetWindow(editor, GW_CHILD); control; control = GetWindow(control, GW_HWNDNEXT))
+    {
+      if (SendMessageW(control, WM_GETFONT, 0, 0) != SendMessageW(edit, WM_GETFONT, 0, 0))
+        validationError = "comment controls use the same font size";
+      RECT bounds{}, client{};
+      GetWindowRect(control, &bounds);
+      MapWindowPoints(nullptr, editor, reinterpret_cast<POINT *>(&bounds), 2);
+      GetClientRect(editor, &client);
+      if (bounds.left < 0 || bounds.top < 0 || bounds.right > client.right || bounds.bottom > client.bottom ||
+          bounds.bottom <= bounds.top)
+        validationError = "comment controls fit inside the dialog";
+    }
     HDC dc = GetDC(edit);
     SendMessageW(editor, WM_CTLCOLOREDIT, reinterpret_cast<WPARAM>(dc), reinterpret_cast<LPARAM>(edit));
     if (GetBkColor(dc) != themeColor(ThemeColor::Surface) || GetTextColor(dc) != themeColor(ThemeColor::Text))
@@ -100,12 +109,12 @@ int main()
 try
 {
   darkTheme = true;
-  auto created = run(nullptr, L"Save", L"Review line");
+  auto created = run(nullptr, L"Save", L"Review line", 18);
   check(created.action == CommentEditAction::Save && created.text == L"Review line", "create comment");
   darkTheme = false;
-  auto edited = run(&created.text, L"Save", L"Updated review");
+  auto edited = run(&created.text, L"Save", L"Updated review", 24);
   check(edited.action == CommentEditAction::Save && edited.text == L"Updated review", "edit comment");
-  auto removed = run(&edited.text, L"Delete");
+  auto removed = run(&edited.text, L"Delete", nullptr, 40);
   check(removed.action == CommentEditAction::Delete, "delete comment");
   auto cancelled = run(nullptr, L"Cancel");
   check(cancelled.action == CommentEditAction::Cancel, "cancel comment");
