@@ -182,7 +182,7 @@ Use **Full file** or press `F` to show every line of the selected changed text f
 | Mouse drag in the diff | Select rows. |
 | Mouse drag between the file list and diff | Resize the file list. |
 | `Ctrl+K` or **U+1F4AC** | Toggle the current commit's comments view. |
-| `F1` | Open the About dialog. |
+| `F1` | Open keyboard shortcut help, with expandable program information. |
 | `Shift+click` | Extend the row selection. |
 | `Ctrl+A` with the diff focused | Select all diff rows. |
 | `Ctrl+A` with **Commit message** focused | Select the full message text. |
