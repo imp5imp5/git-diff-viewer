@@ -270,7 +270,7 @@ void showHelp(HWND owner, HINSTANCE instance, HFONT font)
       SendMessageW(help.list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(row.keys));
     help.about = create(L"BUTTON", L"About GitDiffViewer", WS_TABSTOP, aboutId);
     help.info =
-      create(L"STATIC", L"GitDiffViewer — Version 7\nAuthor: Aleksei Borisov · 2026\nLicensed under the MIT License", SS_NOPREFIX, 0);
+      create(L"STATIC", L"GitDiffViewer — Version 8\nAuthor: Aleksei Borisov · 2026\nLicensed under the MIT License", SS_NOPREFIX, 0);
     help.github = create(L"BUTTON", L"GitHub", WS_TABSTOP, githubId);
     help.close = create(L"BUTTON", L"OK", WS_TABSTOP | BS_DEFPUSHBUTTON, IDOK);
     ShowWindow(help.info, SW_HIDE);
