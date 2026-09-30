@@ -104,11 +104,11 @@ private:
   void moveExplorerSplitter(int index, int position);
   void redrawExplorerPanels();
   static LRESULT CALLBACK infoProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
-  static LRESULT CALLBACK comboProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   static LRESULT CALLBACK commitListProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   void screenshot();
   void find();
   void findNext(int direction);
+  void searchCommits();
   void saveSettings();
   void applyTheme();
   void startStatusAnimation();

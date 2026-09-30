@@ -39,6 +39,22 @@ struct Commit
 {
   std::wstring id, subject, author, message, branch;
 };
+struct CommitSearchRequest
+{
+  std::wstring directory, branch{L"HEAD"}, message, author, path;
+  size_t skip{}, limit{100};
+};
+struct CommitSearchMatch
+{
+  Commit commit;
+  std::wstring date;
+};
+struct CommitSearchPage
+{
+  std::vector<CommitSearchMatch> matches;
+  std::wstring head;
+  bool hasMore{};
+};
 struct HistorySnapshot
 {
   DiffDocument unstaged, staged, outgoing;
@@ -65,5 +81,6 @@ public:
   std::vector<Commit> findCommitsByPrefix(const std::wstring &directory, const std::wstring &prefix,
     const std::atomic_bool &cancel) const;
   std::vector<std::wstring> listRefs(const std::wstring &directory, const std::atomic_bool &cancel) const;
+  CommitSearchPage searchCommits(const CommitSearchRequest &request, const std::atomic_bool &cancel) const;
 };
 } // namespace gdv

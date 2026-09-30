@@ -167,6 +167,7 @@ Use **Full file** or press `F` to show every line of the selected changed text f
 | Input | Action |
 | --- | --- |
 | `F5` or `Ctrl+R` | Refresh Git data. |
+| `Ctrl+D` | Search repository commits by message, author, branch, and changed path. |
 | `Ctrl+Shift+D` | Toggle unified / side-by-side layout. |
 | `F` while not editing a ref or using a dropdown | Toggle full-file context. |
 | `Ctrl+Page Up` / `Ctrl+Page Down` | Go to the previous / next changed block or comment. |
@@ -188,6 +189,12 @@ Use **Full file** or press `F` to show every line of the selected changed text f
 | `Ctrl+C` with the diff focused | Copy selected rows. A single row is copied without a trailing line break. |
 | Arrow keys, `Page Up`, `Page Down`, `Home`, `End` | Navigate within the focused diff. |
 | `Ctrl+Shift+S` | Save an application PNG through a file dialog. |
+
+### Search commits
+
+Press `Ctrl+D` to open **Search commits**. Choose a local or remote branch, or keep `HEAD`, and enter any combination of **Message**, **Author**, and **File / folder**. Message searches the complete commit message; Author accepts a name or email. Both are literal, case-insensitive text filters. File / folder accepts a repository-relative path, directory, or Git path mask such as `*.cpp`. Filters are combined with AND. The search includes commits reachable from the selected branch, including commits brought in by merges, and does not follow file renames.
+
+Click **Find** to search in the background. Results show the author, author date, and first line of the commit message. Hover over a result to read its full message. **Load more** appends the next 100 results. Select a result to reveal **Open commit**, or double-click it to open it in Single commit mode. **Cancel**, Escape, or closing the search window cancels the active search and closes the window. The window uses the current theme and diff font size.
 
 ### Automation interface
 

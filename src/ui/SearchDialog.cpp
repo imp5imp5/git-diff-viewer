@@ -1,5 +1,6 @@
 #include "SearchDialog.h"
 #include "Theme.h"
+#include "ThemedCombo.h"
 #include <algorithm>
 #include <commctrl.h>
 #include <dwmapi.h>
@@ -16,44 +17,6 @@ struct Dialog
   HFONT font{};
   FindDialogResult result;
 };
-LRESULT CALLBACK comboProcedure(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR)
-{
-  if (darkTheme && (message == WM_PAINT || message == WM_PRINTCLIENT))
-  {
-    PAINTSTRUCT paint{};
-    HDC dc = message == WM_PAINT ? BeginPaint(window, &paint) : reinterpret_cast<HDC>(w);
-    RECT bounds{};
-    GetClientRect(window, &bounds);
-    auto background = CreateSolidBrush(themeColor(ThemeColor::Surface));
-    FillRect(dc, &bounds, background);
-    DeleteObject(background);
-    COMBOBOXINFO info{sizeof(info)};
-    if (GetComboBoxInfo(window, &info))
-    {
-      int x = (info.rcButton.left + info.rcButton.right) / 2;
-      int y = (bounds.top + bounds.bottom) / 2;
-      int size = std::max(3, MulDiv(3, static_cast<int>(GetDpiForWindow(window)), 96));
-      POINT arrow[] = {{x - size, y - 1}, {x, y + size - 1}, {x + size, y - 1}};
-      auto pen = CreatePen(PS_SOLID, 1, themeColor(ThemeColor::Text));
-      auto oldPen = SelectObject(dc, pen);
-      Polyline(dc, arrow, 3);
-      SelectObject(dc, oldPen);
-      DeleteObject(pen);
-    }
-    auto border = CreateSolidBrush(themeColor(ThemeColor::Border));
-    FrameRect(dc, &bounds, border);
-    DeleteObject(border);
-    if (message == WM_PAINT)
-      EndPaint(window, &paint);
-    return 0;
-  }
-  auto result = DefSubclassProc(window, message, w, l);
-  if (message == WM_SETFOCUS || message == WM_KILLFOCUS || message == CB_SHOWDROPDOWN || message == WM_ENABLE)
-    InvalidateRect(window, nullptr, FALSE);
-  if (message == WM_NCDESTROY)
-    RemoveWindowSubclass(window, comboProcedure, id);
-  return result;
-}
 std::wstring text(HWND window)
 {
   int length = GetWindowTextLengthW(window);
@@ -168,20 +131,7 @@ FindDialogResult findDiffText(HWND owner, HINSTANCE instance, const std::wstring
   for (const auto &entry : history)
     SendMessageW(state.combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(entry.c_str()));
   SetWindowTextW(state.combo, current.c_str());
-  if (darkTheme)
-  {
-    COMBOBOXINFO info{sizeof(info)};
-    if (GetComboBoxInfo(state.combo, &info))
-    {
-      auto style = GetWindowLongPtrW(info.hwndItem, GWL_STYLE);
-      auto extended = GetWindowLongPtrW(info.hwndItem, GWL_EXSTYLE);
-      SetWindowLongPtrW(info.hwndItem, GWL_STYLE, style & ~WS_BORDER);
-      SetWindowLongPtrW(info.hwndItem, GWL_EXSTYLE, extended & ~WS_EX_CLIENTEDGE);
-      SetWindowPos(info.hwndItem, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-      SetWindowTheme(info.hwndList, L"DarkMode_Explorer", nullptr);
-    }
-  }
-  SetWindowSubclass(state.combo, comboProcedure, 1, 0);
+  installThemedCombo(state.combo);
   create(L"BUTTON", L"Cancel", WS_TABSTOP, cancelId, client.right - pad - buttonWidth * 2 - scale(8),
     client.bottom - pad - buttonHeight, buttonWidth, buttonHeight);
   create(L"BUTTON", L"Find", WS_TABSTOP | BS_DEFPUSHBUTTON, findId, client.right - pad - buttonWidth,

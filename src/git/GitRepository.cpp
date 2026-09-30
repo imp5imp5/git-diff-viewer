@@ -131,6 +131,58 @@ std::vector<std::wstring> GitRepository::listRefs(const std::wstring &directory,
   refs.erase(std::unique(refs.begin(), refs.end()), refs.end());
   return refs;
 }
+CommitSearchPage GitRepository::searchCommits(const CommitSearchRequest &request, const std::atomic_bool &cancel) const
+{
+  GitClient git;
+  auto run = [&](const std::vector<std::wstring> &args) {
+    auto result = git.run(request.directory, args, cancel);
+    if (result.cancelled || cancel)
+      throw std::runtime_error("Cancelled");
+    if (result.exitCode)
+      throw std::runtime_error(result.err.empty() ? "Unable to search commits" : result.err);
+    return result.out;
+  };
+  CommitSearchPage page;
+  // Resolve the ref before passing it to log, and keep pagination on the same commit.
+  page.head =
+    trim(run({L"rev-parse", L"--verify", L"--end-of-options", (request.branch.empty() ? L"HEAD" : request.branch) + L"^{commit}"}));
+  size_t limit = std::clamp<size_t>(request.limit, 1, 1000);
+  std::vector<std::wstring> args{L"-c", L"log.follow=false", L"log", L"--encoding=UTF-8", L"--no-notes",
+    L"--format=%H%x00%s%x00%an <%ae>%x00%aI%x00%B%x00", L"--fixed-strings", L"--regexp-ignore-case", L"--full-history",
+    L"--skip=" + std::to_wstring(request.skip), L"-n" + std::to_wstring(limit + 1)};
+  if (!request.message.empty())
+    args.push_back(L"--grep=" + request.message);
+  if (!request.author.empty())
+    args.push_back(L"--author=" + request.author);
+  args.insert(args.end(), {page.head, L"--"});
+  if (!request.path.empty())
+    args.push_back(request.path);
+  auto output = run(args);
+  size_t position = 0;
+  while (position < output.size())
+  {
+    if (cancel)
+      throw std::runtime_error("Cancelled");
+    while (position < output.size() && (output[position] == '\r' || output[position] == '\n'))
+      ++position;
+    if (position == output.size())
+      break;
+    std::wstring fields[5];
+    for (auto &field : fields)
+    {
+      size_t end = output.find('\0', position);
+      if (end == std::string::npos)
+        throw std::runtime_error("Incomplete commit search response");
+      field = fromUtf8(std::string_view(output).substr(position, end - position));
+      position = end + 1;
+    }
+    page.matches.push_back({{fields[0], fields[1], fields[2], fields[4], request.branch}, fields[3]});
+  }
+  page.hasMore = page.matches.size() > limit;
+  if (page.hasMore)
+    page.matches.resize(limit);
+  return page;
+}
 RepositorySnapshot GitRepository::load(const CompareRequest &request, const std::atomic_bool &cancel) const
 {
   RepositorySnapshot snapshot;

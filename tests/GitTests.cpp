@@ -82,11 +82,63 @@ try
   run({L"checkout", L"-b", L"feature"});
   write(L"one.txt", "one\n");
   run({L"add", L"."});
-  run({L"commit", L"-m", L"one"});
+  run({L"commit", L"-m", L"one", L"-m", L"Search body [literal]"});
   write(L"two.txt", "two\n");
   run({L"add", L"."});
   run({L"commit", L"-m", L"two"});
   GitRepository repo;
+  CommitSearchRequest search;
+  search.directory = dir.wstring();
+  search.branch = L"feature";
+  search.message = L"BODY [literal]";
+  search.author = L"FIXTURE@EXAMPLE.INVALID";
+  search.path = L"*.txt";
+  auto found = repo.searchCommits(search, cancel);
+  check(found.matches.size() == 1 && found.matches[0].commit.subject == L"one" &&
+          found.matches[0].commit.message.find(L"Search body [literal]") != std::wstring::npos &&
+          found.matches[0].commit.author == L"Fixture <fixture@example.invalid>" && found.matches[0].date.size() >= 20,
+    "commit search combines literal message, author email and path with full message and date");
+  search.branch = L"main";
+  check(repo.searchCommits(search, cancel).matches.empty(), "commit search stays within the selected branch");
+  search.branch = L"feature";
+  search.message.clear();
+  search.author.clear();
+  search.path = L"missing.txt";
+  check(repo.searchCommits(search, cancel).matches.empty(), "commit search filters changed paths");
+  search.path.clear();
+  search.limit = 1;
+  auto searchFirst = repo.searchCommits(search, cancel);
+  check(searchFirst.matches.size() == 1 && searchFirst.hasMore && searchFirst.matches[0].commit.subject == L"two",
+    "commit search returns bounded pages");
+  search.branch = searchFirst.head;
+  search.skip = 1;
+  auto searchSecond = repo.searchCommits(search, cancel);
+  check(searchSecond.matches.size() == 1 && searchSecond.hasMore && searchSecond.matches[0].commit.subject == L"one",
+    "commit search pagination keeps the resolved head");
+  search.skip = 2;
+  check(!repo.searchCommits(search, cancel).hasMore, "commit search reports the last page");
+  search.branch = L"--all";
+  bool invalidSearchRef = false;
+  try
+  {
+    repo.searchCommits(search, cancel);
+  }
+  catch (const std::runtime_error &)
+  {
+    invalidSearchRef = true;
+  }
+  check(invalidSearchRef, "commit search rejects option-like refs");
+  std::atomic_bool searchCancelled{true};
+  bool cancelledSearch = false;
+  try
+  {
+    repo.searchCommits(search, searchCancelled);
+  }
+  catch (const std::runtime_error &)
+  {
+    cancelledSearch = true;
+  }
+  check(cancelledSearch, "commit search respects cancellation");
   CompareRequest q{dir.wstring(), ChangeSource::ReadyToPush, {}, {}};
   check(!repo.load(q, cancel).notice.empty(), "no upstream message");
   q.base = L"main";
@@ -514,6 +566,41 @@ try
     invalidPrefix = true;
   }
   check(invalidPrefix, "invalid hash prefix is rejected");
+  {
+    auto searchDir = dir / L"search-history";
+    fs::create_directory(searchDir);
+    auto local = [&](std::vector<std::wstring> args) {
+      auto result = git.run(searchDir.wstring(), args, cancel);
+      check(!result.exitCode, result.err.c_str());
+      return result.out;
+    };
+    local({L"init", L"-b", L"main"});
+    local({L"config", L"user.name", L"Search Author"});
+    local({L"config", L"user.email", L"search@example.invalid"});
+    local({L"config", L"commit.gpgsign", L"false"});
+    local({L"config", L"core.hooksPath", L".no-hooks"});
+    std::ofstream(searchDir / L"old.txt") << "content\n";
+    local({L"add", L"."});
+    local({L"commit", L"-m", L"Original name"});
+    local({L"checkout", L"-b", L"topic"});
+    local({L"mv", L"old.txt", L"new.txt"});
+    local({L"commit", L"-m", L"Renamed path"});
+    local({L"checkout", L"main"});
+    local({L"merge", L"--no-ff", L"topic", L"-m", L"Merge topic"});
+    local({L"config", L"log.follow", L"true"});
+    CommitSearchRequest request;
+    request.directory = searchDir.wstring();
+    request.branch = L"main";
+    request.path = L"new.txt";
+    auto results = repo.searchCommits(request, cancel);
+    bool original = false, renamed = false;
+    for (const auto &match : results.matches)
+    {
+      original |= match.commit.subject == L"Original name";
+      renamed |= match.commit.subject == L"Renamed path";
+    }
+    check(renamed && !original, "commit search includes merged commits and never follows renames, even with log.follow enabled");
+  }
   auto quoted = run({L"-c", L"test.quoted=spaces \"quotes\" end\\", L"config", L"--get", L"test.quoted"});
   check(quoted == "spaces \"quotes\" end\\\n", "argument quoting");
   check(git.run(dir.wstring(), {L"invalid-command"}, cancel).exitCode != 0, "stderr exit code");

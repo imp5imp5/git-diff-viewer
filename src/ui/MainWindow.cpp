@@ -2,10 +2,12 @@
 #include "CommentEditor.h"
 #include "SearchDialog.h"
 #include "CommitPicker.h"
+#include "CommitSearch.h"
 #include "RefPicker.h"
 #include "diff/UnifiedDiffParser.h"
 #include "Screenshot.h"
 #include "Theme.h"
+#include "ThemedCombo.h"
 #include <uxtheme.h>
 #include <dwmapi.h>
 #include <filesystem>
@@ -49,7 +51,8 @@ enum
   About,
   Find,
   FindNext,
-  FindPrevious
+  FindPrevious,
+  SearchCommits
 };
 constexpr int minFilePaneWidth = 220;
 constexpr int minDiffPaneWidth = 300;
@@ -316,12 +319,13 @@ int MainWindow::run(HINSTANCE instance, int show, std::wstring directory, std::w
     refresh();
   if (!automationDirectory_.empty())
     SetTimer(hwnd_, automationTimer, 100, nullptr);
-  ACCEL entries[] = {{FVIRTKEY | FCONTROL, 'F', Find}, {FVIRTKEY, VK_F7, Find}, {FVIRTKEY, VK_F3, FindNext},
-    {FVIRTKEY | FSHIFT, VK_F3, FindPrevious}, {FVIRTKEY | FSHIFT, VK_F7, FindNext}, {FVIRTKEY | FCONTROL, 'R', Refresh},
-    {FVIRTKEY, VK_F5, Refresh}, {FVIRTKEY | FCONTROL | FSHIFT, 'D', Toggle}, {FVIRTKEY | FCONTROL | FSHIFT, 'S', Screenshot},
-    {FVIRTKEY, VK_F2, CopyComments}, {FVIRTKEY | FCONTROL, VK_OEM_PLUS, ZoomIn}, {FVIRTKEY | FCONTROL, 'K', CommentsView},
-    {FVIRTKEY, VK_F1, About}, {FVIRTKEY | FCONTROL, VK_OEM_MINUS, ZoomOut}, {FVIRTKEY | FCONTROL | FSHIFT, VK_OEM_PLUS, ZoomIn},
-    {FVIRTKEY | FCONTROL, VK_DOWN, NextFile}, {FVIRTKEY | FCONTROL, VK_UP, PreviousFile}, {FVIRTKEY | FCONTROL, VK_NEXT, NextChange},
+  ACCEL entries[] = {{FVIRTKEY | FCONTROL, 'D', SearchCommits}, {FVIRTKEY | FCONTROL, 'F', Find}, {FVIRTKEY, VK_F7, Find},
+    {FVIRTKEY, VK_F3, FindNext}, {FVIRTKEY | FSHIFT, VK_F3, FindPrevious}, {FVIRTKEY | FSHIFT, VK_F7, FindNext},
+    {FVIRTKEY | FCONTROL, 'R', Refresh}, {FVIRTKEY, VK_F5, Refresh}, {FVIRTKEY | FCONTROL | FSHIFT, 'D', Toggle},
+    {FVIRTKEY | FCONTROL | FSHIFT, 'S', Screenshot}, {FVIRTKEY, VK_F2, CopyComments}, {FVIRTKEY | FCONTROL, VK_OEM_PLUS, ZoomIn},
+    {FVIRTKEY | FCONTROL, 'K', CommentsView}, {FVIRTKEY, VK_F1, About}, {FVIRTKEY | FCONTROL, VK_OEM_MINUS, ZoomOut},
+    {FVIRTKEY | FCONTROL | FSHIFT, VK_OEM_PLUS, ZoomIn}, {FVIRTKEY | FCONTROL, VK_DOWN, NextFile},
+    {FVIRTKEY | FCONTROL, VK_UP, PreviousFile}, {FVIRTKEY | FCONTROL, VK_NEXT, NextChange},
     {FVIRTKEY | FCONTROL, VK_PRIOR, PreviousChange}, {FVIRTKEY | FCONTROL, VK_ADD, ZoomIn},
     {FVIRTKEY | FCONTROL, VK_SUBTRACT, ZoomOut}};
   HACCEL accel = CreateAcceleratorTableW(entries, static_cast<int>(std::size(entries)));
@@ -417,7 +421,7 @@ void MainWindow::createControls()
   commitLabel_ = control(L"STATIC", L"LOCAL COMMITS", 0, 0);
   commits_ = control(WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_TABSTOP | WS_VSCROLL, Commits);
   for (HWND combo : {source_, commits_})
-    SetWindowSubclass(combo, comboProcedure, 1, reinterpret_cast<DWORD_PTR>(this));
+    installThemedCombo(combo);
   COMBOBOXINFO comboInfo{sizeof(comboInfo)};
   if (GetComboBoxInfo(commits_, &comboInfo))
   {
@@ -2271,58 +2275,6 @@ LRESULT CALLBACK MainWindow::infoProcedure(HWND hwnd, UINT msg, WPARAM w, LPARAM
     RemoveWindowSubclass(hwnd, infoProcedure, id);
   return DefSubclassProc(hwnd, msg, w, l);
 }
-LRESULT CALLBACK MainWindow::comboProcedure(HWND hwnd, UINT msg, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data)
-{
-  auto self = reinterpret_cast<MainWindow *>(data);
-  // Paint the entire closed control: owner draw alone leaves the native arrow and frame light.
-  if (darkTheme && (msg == WM_PAINT || msg == WM_PRINTCLIENT))
-  {
-    PAINTSTRUCT ps{};
-    HDC dc = msg == WM_PAINT ? BeginPaint(hwnd, &ps) : reinterpret_cast<HDC>(w);
-    int saved = SaveDC(dc);
-    RECT bounds{};
-    GetClientRect(hwnd, &bounds);
-    FillRect(dc, &bounds, self->fieldBrush_);
-    COMBOBOXINFO info{sizeof(info)};
-    GetComboBoxInfo(hwnd, &info);
-    DRAWITEMSTRUCT item{};
-    item.CtlType = ODT_COMBOBOX;
-    item.CtlID = GetDlgCtrlID(hwnd);
-    item.itemID = static_cast<UINT>(SendMessageW(hwnd, CB_GETCURSEL, 0, 0));
-    item.itemAction = ODA_DRAWENTIRE;
-    item.hwndItem = hwnd;
-    item.hDC = dc;
-    item.rcItem = bounds;
-    InflateRect(&item.rcItem, -2, -2);
-    item.rcItem.right = info.rcButton.left;
-    if (GetFocus() == hwnd && !(SendMessageW(hwnd, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS))
-      item.itemState = ODS_FOCUS;
-    self->drawListItem(item);
-    auto border = CreateSolidBrush(themeColor(ThemeColor::Border));
-    FrameRect(dc, &bounds, border);
-    DeleteObject(border);
-    int x = (info.rcButton.left + info.rcButton.right) / 2;
-    int y = (bounds.top + bounds.bottom) / 2;
-    int size = MulDiv(3, static_cast<int>(self->dpi_), 96);
-    POINT arrow[] = {{x - size, y - 1}, {x, y + size - 1}, {x + size, y - 1}};
-    auto pen = CreatePen(PS_SOLID, 1, themeColor(ThemeColor::Text));
-    auto oldPen = SelectObject(dc, pen);
-    Polyline(dc, arrow, 3);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
-    RestoreDC(dc, saved);
-    if (msg == WM_PAINT)
-      EndPaint(hwnd, &ps);
-    return 0;
-  }
-  auto result = DefSubclassProc(hwnd, msg, w, l);
-  if (msg == WM_SETFOCUS || msg == WM_KILLFOCUS || msg == CB_SETCURSEL || msg == CB_SHOWDROPDOWN || msg == WM_KEYDOWN ||
-      msg == WM_LBUTTONUP || msg == WM_ENABLE)
-    InvalidateRect(hwnd, nullptr, FALSE);
-  if (msg == WM_NCDESTROY)
-    RemoveWindowSubclass(hwnd, comboProcedure, id);
-  return result;
-}
 void MainWindow::drawListItem(const DRAWITEMSTRUCT &item)
 {
   if (item.CtlID != Files && item.CtlID != ExplorerCommits && item.CtlID != ExplorerFiles && item.CtlID != Commits &&
@@ -2637,6 +2589,26 @@ void MainWindow::findNext(int direction)
     SetWindowTextW(status_, L"Text not found in current diff");
     MessageBoxW(hwnd_, L"No matches in the current diff.", L"Find in diff", MB_OK | MB_ICONINFORMATION);
   }
+}
+void MainWindow::searchCommits()
+{
+  if (directory_.empty())
+    return;
+  auto branch = selectedBranchRef_.empty() ? snapshot_.branch : selectedBranchRef_;
+  if (branch == L"Detached HEAD")
+    branch = L"HEAD";
+  auto selected = searchRepositoryCommits(hwnd_, instance_, directory_, branch, diff_.fontSize());
+  if (!selected)
+    return;
+  SendMessageW(source_, CB_SETCURSEL, static_cast<WPARAM>(ChangeSource::Commit), 0);
+  sourceChanged();
+  commitBranch_ = selected->branch == L"HEAD" ? snapshot_.branch : selected->branch;
+  if (commitBranch_ == L"Detached HEAD")
+    commitBranch_.clear();
+  commitBranchCommit_ = selected->id;
+  selectedBranchRef_ = selected->branch == L"HEAD" ? std::wstring{} : selected->branch;
+  SetWindowTextW(target_, selected->id.c_str());
+  refresh();
 }
 void MainWindow::chooseDisplayedRef(bool upstream)
 {
@@ -3432,6 +3404,7 @@ LRESULT MainWindow::message(UINT msg, WPARAM w, LPARAM l)
         case Toggle: toggle(); break;
         case Screenshot: screenshot(); break;
         case Find: find(); break;
+        case SearchCommits: searchCommits(); break;
         case FindNext: findNext(1); break;
         case FindPrevious: findNext(-1); break;
         case ZoomIn: diff_.zoom(1); break;
